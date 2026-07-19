@@ -1,15 +1,49 @@
+import 'package:flutter/material.dart';
+import 'login_screen.dart';
 import 'upload_screen.dart';
 import 'analytics_screen.dart';
 import 'map_screen.dart';
-import 'package:flutter/material.dart';
-import 'login_screen.dart';
 import 'tracker_screen.dart';
 import 'prediction_screen.dart';
 import 'reports_screen.dart';
 import 'settings_screen.dart';
 import 'admin_screen.dart';
-class DashboardScreen extends StatelessWidget {
+import '../services/api_service.dart';
+
+class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
+
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  String _totalRecords = '...';
+  String _activeFloats = '...';
+  String _avgTemp = '...';
+  String _avgSalinity = '...';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStats();
+  }
+
+  Future<void> _loadStats() async {
+    final result = await ApiService.getDashboardStats();
+    if (!mounted) return;
+
+    if (result['statusCode'] == 200) {
+      final data = result['body'];
+      setState(() {
+        _totalRecords = '${data['total_records']}';
+        _activeFloats = '${data['active_floats']}';
+        _avgTemp = '${data['avg_temperature']}°C';
+        _avgSalinity = '${data['avg_salinity']}';
+      });
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -144,34 +178,34 @@ ListTile(
           ],
         ),
       ),
-      body: GridView.count(
-        padding: const EdgeInsets.all(16),
-        crossAxisCount: 2,
-        mainAxisSpacing: 16,
-        crossAxisSpacing: 16,
-        children: const [
-          _DashboardCard(
-            icon: Icons.storage_outlined,
-            label: 'Total Records',
-            value: '0',
-          ),
-          _DashboardCard(
-            icon: Icons.satellite_alt_outlined,
-            label: 'Active Floats',
-            value: '0',
-          ),
-          _DashboardCard(
-            icon: Icons.thermostat_outlined,
-            label: 'Avg Temperature',
-            value: '--°C',
-          ),
-          _DashboardCard(
-            icon: Icons.water_drop_outlined,
-            label: 'Avg Salinity',
-            value: '--',
-          ),
-        ],
-      ),
+body: GridView.count(
+  padding: const EdgeInsets.all(16),
+  crossAxisCount: 2,
+  mainAxisSpacing: 16,
+  crossAxisSpacing: 16,
+  children: [
+    _DashboardCard(
+      icon: Icons.storage_outlined,
+      label: 'Total Records',
+      value: _totalRecords,
+    ),
+    _DashboardCard(
+      icon: Icons.satellite_alt_outlined,
+      label: 'Active Floats',
+      value: _activeFloats,
+    ),
+    _DashboardCard(
+      icon: Icons.thermostat_outlined,
+      label: 'Avg Temperature',
+      value: _avgTemp,
+    ),
+    _DashboardCard(
+      icon: Icons.water_drop_outlined,
+      label: 'Avg Salinity',
+      value: _avgSalinity,
+    ),
+  ],
+),
     );
   }
 }

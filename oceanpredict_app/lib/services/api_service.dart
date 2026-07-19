@@ -37,4 +37,25 @@ class ApiService {
       'body': jsonDecode(response.body),
     };
   }
+  static Future<Map<String, dynamic>> getDashboardStats() async {
+  final response = await http.get(
+    Uri.parse('$baseUrl/dashboard/stats'),
+  );
+  return {
+    'statusCode': response.statusCode,
+    'body': jsonDecode(response.body),
+  };
+}
+static Future<Map<String, dynamic>> uploadFile(String filePath, String fileName) async {
+  var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/upload'));
+  request.files.add(await http.MultipartFile.fromPath('file', filePath, filename: fileName));
+
+  var streamedResponse = await request.send();
+  var response = await http.Response.fromStream(streamedResponse);
+
+  return {
+    'statusCode': response.statusCode,
+    'body': jsonDecode(response.body),
+  };
+}
 }
