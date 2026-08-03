@@ -88,6 +88,108 @@ def dashboard_stats():
     }), 200
 
 
+@app.route('/analytics/summary', methods=['GET'])
+def analytics_summary():
+    temp_stats = db.session.query(
+        db.func.avg(FloatData.temperature),
+        db.func.min(FloatData.temperature),
+        db.func.max(FloatData.temperature),
+    ).first()
+
+    sal_stats = db.session.query(
+        db.func.avg(FloatData.salinity),
+        db.func.min(FloatData.salinity),
+        db.func.max(FloatData.salinity),
+    ).first()
+
+    pres_stats = db.session.query(
+        db.func.avg(FloatData.pressure),
+        db.func.max(FloatData.pressure),
+    ).first()
+
+    def safe_round(val):
+        return round(val, 2) if val is not None else 0
+
+    return jsonify({
+        'temperature': {
+            'avg': safe_round(temp_stats[0]),
+            'min': safe_round(temp_stats[1]),
+            'max': safe_round(temp_stats[2]),
+        },
+        'salinity': {
+            'avg': safe_round(sal_stats[0]),
+            'min': safe_round(sal_stats[1]),
+            'max': safe_round(sal_stats[2]),
+        },
+        'pressure': {
+            'avg': safe_round(pres_stats[0]),
+            'max_depth': safe_round(pres_stats[1]),
+        },
+    }), 200
+
+
+@app.route('/floats/locations', methods=['GET'])
+def float_locations():
+    # Get the most recent reading per float (distinct float_id, latest by id)
+    subquery = db.session.query(
+        FloatData.float_id,
+        db.func.max(FloatData.id).label('max_id')
+    ).group_by(FloatData.float_id).subquery()
+
+    latest_readings = db.session.query(FloatData).join(
+        subquery, FloatData.id == subquery.c.max_id
+    ).all()
+
+    result = []
+    for reading in latest_readings:
+        result.append({
+          'float_id': reading.float_id,
+          'latitude': round(reading.latitude, 2) if reading.latitude else None,
+          'longitude': round(reading.longitude, 2) if reading.longitude else None,
+          'temperature': round(reading.temperature, 2) if reading.temperature else None,
+          'salinity': round(reading.salinity, 2) if reading.salinity else None,
+          'pressure': round(reading.pressure, 2) if reading.pressure else None,
+        })
+
+    return jsonify({'floats': result}), 200
+
+@app.route('/floats/<float_id>/history', methods=['GET'])
+def float_history(float_id):
+    readings = FloatData.query.filter_by(float_id=float_id).order_by(FloatData.id).all()
+
+    if not readings:
+        return jsonify({'message': 'No data found for this float'}), 404
+
+    history = []
+    for r in readings:
+        history.append({
+            'cycle_number': r.cycle_number,
+            'latitude': round(r.latitude, 2) if r.latitude else None,
+            'longitude': round(r.longitude, 2) if r.longitude else None,
+            'temperature': round(r.temperature, 2) if r.temperature else None,
+            'salinity': round(r.salinity, 2) if r.salinity else None,
+            'pressure': round(r.pressure, 2) if r.pressure else None,
+        })
+
+    latest = readings[-1]
+
+    return jsonify({
+        'float_id': float_id,
+        'total_readings': len(readings),
+        'latest': {
+            'latitude': round(latest.latitude, 2) if latest.latitude else None,
+            'longitude': round(latest.longitude, 2) if latest.longitude else None,
+            'cycle_number': latest.cycle_number,
+        },
+        'history': history,
+    }), 200
+
+@app.route('/floats/ids', methods=['GET'])
+def float_ids():
+    ids = db.session.query(FloatData.float_id).distinct().all()
+    return jsonify({'float_ids': [i[0] for i in ids]}), 200
+
+
 @app.route('/seed-sample-data', methods=['POST'])
 def seed_sample_data():
     dataset = Dataset(user_id=1, filename='sample_argo_data.csv', total_records=5)
@@ -109,6 +211,7 @@ def seed_sample_data():
     db.session.commit()
     return jsonify({'message': 'Sample data seeded successfully'}), 201
 
+
 @app.route('/upload', methods=['POST'])
 def upload_dataset():
     if 'file' not in request.files:
@@ -129,7 +232,11 @@ def upload_dataset():
         salinities = ds['PSAL'].values
         pressures = ds['PRES'].values
         cycle_numbers = ds['CYCLE_NUMBER'].values
-        platform_number = str(ds['PLATFORM_NUMBER'].values[0]).strip()
+        raw_platform = ds['PLATFORM_NUMBER'].values[0]
+        if isinstance(raw_platform, bytes):
+          platform_number = raw_platform.decode('utf-8').strip()
+        else:
+          platform_number = str(raw_platform).strip()
 
         ds.close()
     except KeyError as e:
@@ -144,7 +251,6 @@ def upload_dataset():
     n_profiles = len(latitudes)
 
     for p in range(n_profiles):
-        # Handle both 1D (single level) and 2D (multi-level) temp/sal/pressure arrays
         if temperatures.ndim == 1:
             levels_temp = [temperatures[p]]
             levels_sal = [salinities[p]]
@@ -159,7 +265,6 @@ def upload_dataset():
             sal_val = levels_sal[level]
             pres_val = levels_pres[level]
 
-            # Skip missing/NaN readings (common in real ocean sensor data)
             if pd.isna(temp_val) or pd.isna(sal_val) or pd.isna(pres_val):
                 continue
 

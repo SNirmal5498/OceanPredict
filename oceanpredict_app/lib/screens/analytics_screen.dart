@@ -1,43 +1,65 @@
 import 'package:flutter/material.dart';
+import '../services/api_service.dart';
 
-class AnalyticsScreen extends StatelessWidget {
+class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
+
+  @override
+  State<AnalyticsScreen> createState() => _AnalyticsScreenState();
+}
+
+class _AnalyticsScreenState extends State<AnalyticsScreen> {
+  bool _isLoading = true;
+  Map<String, dynamic>? _data;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    final result = await ApiService.getAnalyticsSummary();
+    if (!mounted) return;
+
+    if (result['statusCode'] == 200) {
+      setState(() {
+        _data = result['body'];
+        _isLoading = false;
+      });
+    } else {
+      setState(() => _isLoading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Analytics')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          _buildSectionCard('Temperature Analysis', Icons.thermostat_outlined,
-              'Average: 18.4°C  •  Range: 2°C - 29°C'),
-          _buildSectionCard('Salinity Analysis', Icons.water_drop_outlined,
-              'Average: 35.1 PSU  •  Range: 33 - 37 PSU'),
-          _buildSectionCard('Pressure Analysis', Icons.speed_outlined,
-              'Average: 512 dbar  •  Max depth: 1998m'),
-          _buildSectionCard('Ocean Health Score', Icons.eco_outlined,
-              'Score: 78/100  •  Status: Good'),
-          const SizedBox(height: 8),
-          Card(
-            color: Colors.cyan.shade50,
-            child: const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Row(
-                children: [
-                  Icon(Icons.auto_awesome, color: Colors.orange),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'AI Insight: Temperature trends show a gradual warming pattern over the last 30 days.',
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _data == null
+              ? const Center(child: Text('Failed to load analytics data'))
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    _buildSectionCard(
+                      'Temperature Analysis',
+                      Icons.thermostat_outlined,
+                      'Average: ${_data!['temperature']['avg']}°C  •  Range: ${_data!['temperature']['min']}°C - ${_data!['temperature']['max']}°C',
                     ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
+                    _buildSectionCard(
+                      'Salinity Analysis',
+                      Icons.water_drop_outlined,
+                      'Average: ${_data!['salinity']['avg']} PSU  •  Range: ${_data!['salinity']['min']} - ${_data!['salinity']['max']} PSU',
+                    ),
+                    _buildSectionCard(
+                      'Pressure Analysis',
+                      Icons.speed_outlined,
+                      'Average: ${_data!['pressure']['avg']} dbar  •  Max depth: ${_data!['pressure']['max_depth']} dbar',
+                    ),
+                  ],
+                ),
     );
   }
 

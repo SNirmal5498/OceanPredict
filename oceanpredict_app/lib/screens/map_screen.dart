@@ -1,51 +1,67 @@
 import 'package:flutter/material.dart';
+import '../services/api_service.dart';
 
-class MapScreen extends StatelessWidget {
+class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
+
+  @override
+  State<MapScreen> createState() => _MapScreenState();
+}
+
+class _MapScreenState extends State<MapScreen> {
+  bool _isLoading = true;
+  List<dynamic> _floats = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFloats();
+  }
+
+  Future<void> _loadFloats() async {
+    final result = await ApiService.getFloatLocations();
+    if (!mounted) return;
+
+    if (result['statusCode'] == 200) {
+      setState(() {
+        _floats = result['body']['floats'];
+        _isLoading = false;
+      });
+    } else {
+      setState(() => _isLoading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Ocean Map')),
-      body: Stack(
-        children: [
-          Container(
-            color: Colors.blue.shade50,
-            child: const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.map_outlined, size: 64, color: Colors.grey),
-                  SizedBox(height: 12),
-                  Text(
-                    'Map integration coming in next lesson\n(flutter_map + OpenStreetMap)',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Positioned(
-            top: 16,
-            left: 16,
-            right: 16,
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TextField(
-                  decoration: InputDecoration(
-                    hintText: 'Search Float ID...',
-                    prefixIcon: const Icon(Icons.search),
-                    border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _floats.isEmpty
+              ? const Center(child: Text('No float data available yet'))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _floats.length,
+                  itemBuilder: (context, index) {
+                    final f = _floats[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.cyan.shade100,
+                          child: Icon(Icons.satellite_alt, color: Colors.cyan.shade700),
+                        ),
+                        title: Text('Float ${f['float_id']}'),
+                        subtitle: Text(
+                          'Lat: ${f['latitude'].toStringAsFixed(2)}, Long: ${f['longitude'].toStringAsFixed(2)}\n'
+                          'Temp: ${f['temperature']}°C  •  Salinity: ${f['salinity']}',
+                        ),
+                        isThreeLine: true,
+                      ),
+                    );
+                  },
                 ),
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

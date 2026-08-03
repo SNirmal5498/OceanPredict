@@ -1,76 +1,149 @@
 import 'package:flutter/material.dart';
+import '../services/api_service.dart';
 
-class TrackerScreen extends StatelessWidget {
+class TrackerScreen extends StatefulWidget {
   const TrackerScreen({super.key});
+
+  @override
+  State<TrackerScreen> createState() => _TrackerScreenState();
+}
+
+class _TrackerScreenState extends State<TrackerScreen> {
+  bool _isLoadingIds = true;
+  List<String> _floatIds = [];
+  String? _selectedFloatId;
+
+  bool _isLoadingHistory = false;
+  Map<String, dynamic>? _historyData;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFloatIds();
+  }
+
+  Future<void> _loadFloatIds() async {
+    final result = await ApiService.getFloatIds();
+    if (!mounted) return;
+
+    if (result['statusCode'] == 200) {
+      final ids = List<String>.from(result['body']['float_ids']);
+      setState(() {
+        _floatIds = ids;
+        _isLoadingIds = false;
+        if (ids.isNotEmpty) {
+          _selectedFloatId = ids.first;
+        }
+      });
+      if (_selectedFloatId != null) {
+        _loadHistory(_selectedFloatId!);
+      }
+    } else {
+      setState(() => _isLoadingIds = false);
+    }
+  }
+
+  Future<void> _loadHistory(String floatId) async {
+    setState(() => _isLoadingHistory = true);
+
+    final result = await ApiService.getFloatHistory(floatId);
+    if (!mounted) return;
+
+    setState(() {
+      _isLoadingHistory = false;
+      _historyData = result['statusCode'] == 200 ? result['body'] : null;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Float Tracker')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      body: _isLoadingIds
+          ? const Center(child: CircularProgressIndicator())
+          : _floatIds.isEmpty
+              ? const Center(child: Text('No floats available yet'))
+              : Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text(
-                        'Float #2902198',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      DropdownButtonFormField<String>(
+                        initialValue: _selectedFloatId,
+                        decoration: const InputDecoration(
+                          labelText: 'Select Float',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: _floatIds.map((id) {
+                          return DropdownMenuItem(value: id, child: Text(id));
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setState(() => _selectedFloatId = value);
+                          _loadHistory(value);
+                        },
                       ),
-                      Chip(
-                        label: const Text('Active'),
-                        backgroundColor: Colors.green.shade100,
+                      const SizedBox(height: 16),
+                      Expanded(
+                        child: _isLoadingHistory
+                            ? const Center(child: CircularProgressIndicator())
+                            : _historyData == null
+                                ? const Center(child: Text('No data for this float'))
+                                : _buildHistoryView(),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  _infoRow(Icons.straighten_outlined, 'Distance Travelled', '482.3 km'),
-                  _infoRow(Icons.cyclone_outlined, 'Current Cycle', '#134'),
-                  _infoRow(Icons.location_on_outlined, 'Last Position', '12.4°N, 68.2°E'),
-                  _infoRow(Icons.access_time_outlined, 'Last Update', '2 hours ago'),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text('Travel History', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          const SizedBox(height: 8),
-          Container(
-            height: 200,
-            decoration: BoxDecoration(
-              color: Colors.blue.shade50,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Center(
-              child: Text(
-                'Animated route map\n(coming with map integration)',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-          ),
-        ],
-      ),
+                ),
     );
   }
 
-  Widget _infoRow(IconData icon, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: Colors.cyan.shade700),
-          const SizedBox(width: 8),
-          Text('$label: ', style: const TextStyle(color: Colors.grey)),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
-        ],
-      ),
+  Widget _buildHistoryView() {
+    final data = _historyData!;
+    final latest = data['latest'];
+    final history = data['history'] as List<dynamic>;
+
+    return ListView(
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Float ${data['float_id']}',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                    ),
+                    Chip(
+                      label: Text('${data['total_readings']} readings'),
+                      backgroundColor: Colors.green.shade100,
+                    ),
+                  ],
+                ),
+                const Divider(),
+                Text('Latest Position: ${latest['latitude']}, ${latest['longitude']}'),
+                Text('Latest Cycle: #${latest['cycle_number']}'),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        const Text('Reading History', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        const SizedBox(height: 8),
+        ...history.map((h) => Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: const Icon(Icons.water_drop_outlined),
+                title: Text('Cycle #${h['cycle_number']}'),
+                subtitle: Text(
+                  'Temp: ${h['temperature']}°C  •  Salinity: ${h['salinity']}  •  Pressure: ${h['pressure']} dbar',
+                ),
+              ),
+            )),
+      ],
     );
   }
 }

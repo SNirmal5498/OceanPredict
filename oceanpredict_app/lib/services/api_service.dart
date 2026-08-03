@@ -21,7 +21,47 @@ class ApiService {
       'body': jsonDecode(response.body),
     };
   }
+   
+  static Future<Map<String, dynamic>> getAnalyticsSummary() async {
+  final response = await http.get(
+    Uri.parse('$baseUrl/analytics/summary'),
+  );
+  return {
+    'statusCode': response.statusCode,
+    'body': jsonDecode(response.body),
+  };
+  }
 
+  static Future<Map<String, dynamic>> getFloatIds() async {
+  final response = await http.get(
+    Uri.parse('$baseUrl/floats/ids'),
+  );
+  return {
+    'statusCode': response.statusCode,
+    'body': jsonDecode(response.body),
+  };
+  }
+
+  static Future<Map<String, dynamic>> getFloatHistory(String floatId) async { 
+  final response = await http.get(
+    Uri.parse('$baseUrl/floats/$floatId/history'),
+  );
+  return {
+    'statusCode': response.statusCode,
+    'body': jsonDecode(response.body),
+  };
+ }
+  
+  static Future<Map<String, dynamic>> getFloatLocations() async {
+  final response = await http.get(
+    Uri.parse('$baseUrl/floats/locations'),
+  );
+  return {
+    'statusCode': response.statusCode,
+    'body': jsonDecode(response.body),
+  };
+  }
+  
   static Future<Map<String, dynamic>> login(
       String email, String password) async {
     final response = await http.post(
