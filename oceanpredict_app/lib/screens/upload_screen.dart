@@ -14,7 +14,7 @@ class _UploadScreenState extends State<UploadScreen>
     with SingleTickerProviderStateMixin {
   // ---- Selected file state (existing functionality, extended) ----
   String? _selectedFileName;
-  String? _selectedFilePath;
+  List<int>? _selectedFileBytes;
   int? _selectedFileSize;
   DateTime? _selectedAt;
 
@@ -81,27 +81,28 @@ class _UploadScreenState extends State<UploadScreen>
   }
 
   Future<void> _pickFile() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['nc'],
-    );
+  FilePickerResult? result = await FilePicker.platform.pickFiles(
+    type: FileType.custom,
+    allowedExtensions: ['nc'],
+    withData: true, // ensures bytes are available on web too
+  );
 
-    if (result != null && result.files.single.path != null) {
-      setState(() {
-        _selectedFileName = result.files.single.name;
-        _selectedFilePath = result.files.single.path;
-        _selectedFileSize = result.files.single.size;
-        _selectedAt = DateTime.now();
-        _lastUploadResult = null;
-        _analyticsSnapshot = null;
-      });
-    }
+  if (result != null && result.files.single.bytes != null) {
+    setState(() {
+      _selectedFileName = result.files.single.name;
+      _selectedFileBytes = result.files.single.bytes;
+      _selectedFileSize = result.files.single.size;
+      _selectedAt = DateTime.now();
+      _lastUploadResult = null;
+      _analyticsSnapshot = null;
+    });
+  }
   }
 
   void _clearSelection() {
     setState(() {
       _selectedFileName = null;
-      _selectedFilePath = null;
+      _selectedFileBytes = null;
       _selectedFileSize = null;
       _selectedAt = null;
       _lastUploadResult = null;
@@ -146,7 +147,7 @@ class _UploadScreenState extends State<UploadScreen>
   }
 
   Future<void> _uploadFile() async {
-    if (_selectedFilePath == null || _selectedFileName == null) return;
+    if (_selectedFileBytes == null || _selectedFileName == null) return;
 
     setState(() {
       _isUploading = true;
@@ -164,7 +165,7 @@ class _UploadScreenState extends State<UploadScreen>
 
     final fileName = _selectedFileName!;
     final fileSize = _selectedFileSize;
-    final result = await ApiService.uploadFile(_selectedFilePath!, fileName);
+    final result = await ApiService.uploadFile(_selectedFileBytes!, fileName);
 
     _progressTimer?.cancel();
     if (!mounted) return;
