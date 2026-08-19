@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'map_service.dart';
+import '../../services/map_service.dart';
 
 // ============================================================
 // Search bar
