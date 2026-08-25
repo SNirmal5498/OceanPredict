@@ -1,3 +1,7 @@
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xarray as xr
 import tempfile
 import os
@@ -291,6 +295,116 @@ def upload_dataset():
         'filename': file.filename,
     }), 201
 
+@app.route('/api/predictions', methods=['POST'])
+def predict():
+    data = request.get_json() or {}
+    model_type = data.get('model')
+    target = data.get('target')
+    float_id = data.get('float_id')
+    horizon = data.get('horizon', 5)
+
+    if model_type not in ('linear_regression', 'random_forest'):
+        return jsonify({'message': 'Invalid model type'}), 400
+    if target not in ('temperature', 'salinity'):
+        return jsonify({'message': 'Invalid prediction target'}), 400
+    try:
+        horizon = int(horizon)
+        if horizon < 1 or horizon > 50:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'message': 'Invalid forecast horizon'}), 400
+
+    query = FloatData.query
+    if float_id and float_id != 'all':
+        query = query.filter_by(float_id=float_id)
+    rows = query.order_by(FloatData.cycle_number.asc(), FloatData.id.asc()).all()
+
+    feature_rows = []
+    targets = []
+    for r in rows:
+        target_val = r.temperature if target == 'temperature' else r.salinity
+        if (target_val is None or r.pressure is None or r.latitude is None
+                or r.longitude is None or r.cycle_number is None):
+            continue
+        feature_rows.append([r.cycle_number, r.pressure, r.latitude, r.longitude])
+        targets.append(target_val)
+
+    n = len(targets)
+    MIN_REQUIRED = 5
+    if n < MIN_REQUIRED:
+        return jsonify({
+            'message': 'Insufficient historical data for prediction.',
+            'available_records': n,
+            'required_minimum': MIN_REQUIRED,
+        }), 400
+
+    X = np.array(feature_rows, dtype=float)
+    y = np.array(targets, dtype=float)
+
+    test_size = max(1, round(n * 0.2))
+    train_size = n - test_size
+    if train_size < 2:
+        train_size = n - 1
+        test_size = 1
+
+    X_train, X_test = X[:train_size], X[train_size:]
+    y_train, y_test = y[:train_size], y[train_size:]
+
+    def make_model():
+        if model_type == 'linear_regression':
+            return LinearRegression()
+        return RandomForestRegressor(n_estimators=100, random_state=42)
+
+    eval_model = make_model()
+    eval_model.fit(X_train, y_train)
+    y_pred_test = eval_model.predict(X_test)
+
+    mae = float(mean_absolute_error(y_test, y_pred_test))
+    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred_test)))
+    r2 = float(r2_score(y_test, y_pred_test)) if len(y_test) > 1 else None
+
+    feature_importance = None
+    if model_type == 'random_forest':
+        importances = eval_model.feature_importances_
+        names = ['Cycle Number', 'Pressure', 'Latitude', 'Longitude']
+        total = sum(importances) or 1
+        feature_importance = {
+            names[i]: round(float(importances[i]) / total * 100, 1) for i in range(len(names))
+        }
+
+    # Final model retrained on ALL available real data for the actual forecast.
+    final_model = make_model()
+    final_model.fit(X, y)
+
+    last_cycle = int(X[-1][0])
+    last_pressure, last_lat, last_lon = X[-1][1], X[-1][2], X[-1][3]
+
+    forecast = []
+    for step in range(1, horizon + 1):
+        future_cycle = last_cycle + step
+        # Future pressure/lat/long are unknown, so we hold them at the last
+        # observed real values — a documented simplification, not fake data.
+        future_X = np.array([[future_cycle, last_pressure, last_lat, last_lon]])
+        pred_val = float(final_model.predict(future_X)[0])
+        forecast.append({'step': step, 'cycle': future_cycle, 'predicted_value': round(pred_val, 2)})
+
+    return jsonify({
+        'model': model_type,
+        'target': target,
+        'float_id': float_id,
+        'horizon': horizon,
+        'latest_actual_value': round(float(y[-1]), 2),
+        'forecast': forecast,
+        'metrics': {
+            'train_samples': train_size,
+            'test_samples': test_size,
+            'mae': round(mae, 2),
+            'rmse': round(rmse, 2),
+            'r2': round(r2, 2) if r2 is not None else None,
+        },
+        'feature_importance': feature_importance,
+        'features_used': ['Cycle Number', 'Pressure', 'Latitude', 'Longitude'],
+    }), 200
 
 if __name__ == '__main__':
     with app.app_context():
