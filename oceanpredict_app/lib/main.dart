@@ -1,5 +1,6 @@
-import 'screens/login_screen.dart';
 import 'package:flutter/material.dart';
+import 'screens/login_screen.dart';
+import 'services/settings_service.dart';
 
 void main() {
   runApp(const OceanPredictApp());
@@ -10,14 +11,21 @@ class OceanPredictApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'OceanPredict',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorSchemeSeed: Colors.cyan,
-        useMaterial3: true,
-      ),
-      home: const SplashScreen(),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: SettingsService.themeModeNotifier,
+      builder: (context, currentThemeMode, child) {
+        return MaterialApp(
+          title: 'OceanPredict',
+          debugShowCheckedModeBanner: false,
+          
+          // Reuses themes defined in SettingsService
+          theme: SettingsService.lightTheme,
+          darkTheme: SettingsService.darkTheme,
+          themeMode: currentThemeMode,
+
+          home: const SplashScreen(),
+        );
+      },
     );
   }
 }
@@ -36,14 +44,14 @@ class _SplashScreenState extends State<SplashScreen> {
     _navigateAfterDelay();
   }
 
-Future<void> _navigateAfterDelay() async {
-  await Future.delayed(const Duration(seconds: 3));
-  if (!mounted) return;
-  Navigator.pushReplacement(
-    context,
-    MaterialPageRoute(builder: (context) => const LoginScreen()),
-  );
-}
+  Future<void> _navigateAfterDelay() async {
+    await Future.delayed(const Duration(seconds: 3));
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
