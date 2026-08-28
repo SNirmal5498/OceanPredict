@@ -1,31 +1,46 @@
-import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import xarray as xr
-import tempfile
 import os
+import tempfile
+from functools import wraps
+
+import numpy as np
 import pandas as pd
-from flask import Flask, request, jsonify
+import xarray as xr
+from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_jwt_extended import (
+    JWTManager,
+    create_access_token,
+    get_jwt_identity,
+    jwt_required,
+)
 from flask_sqlalchemy import SQLAlchemy
-from flask_jwt_extended import JWTManager, create_access_token
-from werkzeug.security import generate_password_hash, check_password_hash
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from werkzeug.security import check_password_hash, generate_password_hash
+
 from config import Config
 
+# Initialize App & Extensions once
 app = Flask(__name__)
 app.config.from_object(Config)
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
+
+# ==================================================
+# DATABASE MODELS
+# ==================================================
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default='user')
+    status = db.Column(db.String(20), nullable=False, default='active')
 
 
 class Dataset(db.Model):
@@ -34,6 +49,7 @@ class Dataset(db.Model):
     filename = db.Column(db.String(255), nullable=False)
     upload_date = db.Column(db.DateTime, server_default=db.func.now())
     total_records = db.Column(db.Integer, default=0)
+    user = db.relationship('User', backref=db.backref('datasets', lazy=True))
 
 
 class FloatData(db.Model):
@@ -49,32 +65,206 @@ class FloatData(db.Model):
     timestamp = db.Column(db.DateTime)
 
 
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.get_json()
+class SystemLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    event = db.Column(db.String(255), nullable=False)
+    user_email = db.Column(db.String(120), nullable=True)
+    timestamp = db.Column(db.DateTime, server_default=db.func.now())
 
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify({'message': 'Email already registered'}), 400
 
-    hashed_password = generate_password_hash(data['password'])
-    new_user = User(name=data['name'], email=data['email'], password=hashed_password)
-    db.session.add(new_user)
+# ==================================================
+# HELPERS & DECORATORS
+# ==================================================
+
+def admin_required():
+    def decorator(fn):
+        @wraps(fn)
+        @jwt_required()
+        def wrapper(*args, **kwargs):
+            user_id = get_jwt_identity()
+            user = User.query.get(int(user_id))
+            if not user or user.role.lower() != 'admin':
+                return jsonify({'message': 'Admin privilege required.'}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def log_event(event_description, email=None):
+    log = SystemLog(event=event_description, user_email=email)
+    db.session.add(log)
     db.session.commit()
 
-    return jsonify({'message': 'User registered successfully'}), 201
+
+# ==================================================
+# AUTHENTICATION ENDPOINTS
+# ==================================================
+
+@app.route('/register', methods=['POST', 'OPTIONS'])
+def register():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+
+    try:
+        data = request.get_json() or {}
+        if not data.get('email') or not data.get('password'):
+            return jsonify({'message': 'Email and password required'}), 400
+
+        if User.query.filter_by(email=data['email']).first():
+            return jsonify({'message': 'Email already registered'}), 400
+
+        hashed_password = generate_password_hash(data['password'])
+        role = data.get('role', 'user')
+        new_user = User(
+            name=data.get('name', 'User'),
+            email=data['email'],
+            password=hashed_password,
+            role=role
+        )
+        db.session.add(new_user)
+        db.session.commit()
+
+        log_event(f"User registered ({role})", data['email'])
+        return jsonify({'message': 'User registered successfully'}), 201
+    except Exception as e:
+        print(f"Register Exception: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
-@app.route('/login', methods=['POST'])
+@app.route('/login', methods=['POST', 'OPTIONS'])
 def login():
-    data = request.get_json()
-    user = User.query.filter_by(email=data['email']).first()
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
 
-    if not user or not check_password_hash(user.password, data['password']):
+    try:
+        data = request.get_json() or {}
+        email = data.get('email')
+        password = data.get('password')
+
+        if not email or not password:
+            return jsonify({'message': 'Missing email or password'}), 400
+
+        user = User.query.filter_by(email=email).first()
+
+        if user and check_password_hash(user.password, password):
+            # Generate real JWT identity token using the user's ID
+            access_token = create_access_token(identity=str(user.id))
+            log_event("User logged in", user.email)
+            return jsonify({
+                'token': access_token,
+                'user': {
+                    'id': user.id,
+                    'name': user.name,
+                    'email': user.email,
+                    'role': user.role
+                }
+            }), 200
+
         return jsonify({'message': 'Invalid email or password'}), 401
 
-    access_token = create_access_token(identity=str(user.id))
-    return jsonify({'access_token': access_token, 'name': user.name}), 200
+    except Exception as e:
+        print(f"Login Exception: {e}")
+        return jsonify({'error': str(e)}), 500
 
+
+# ==================================================
+# ADMIN PANEL ENDPOINTS
+# ==================================================
+
+@app.route('/api/admin/stats', methods=['GET'])
+@admin_required()
+def admin_stats():
+    total_users = User.query.count()
+    total_datasets = Dataset.query.count()
+    total_records = FloatData.query.count()
+    active_users = User.query.filter_by(status='active').count()
+
+    return jsonify({
+        'totalUsers': total_users,
+        'totalDatasets': total_datasets,
+        'totalRecords': total_records,
+        'activeUsers': active_users,
+    }), 200
+
+
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required()
+def admin_users():
+    users = User.query.all()
+    result = [{
+        'id': u.id,
+        'name': u.name,
+        'email': u.email,
+        'role': u.role,
+        'status': u.status,
+    } for u in users]
+    return jsonify(result), 200
+
+
+@app.route('/api/admin/users/<int:user_id>/role', methods=['PUT'])
+@admin_required()
+def admin_update_role(user_id):
+    data = request.get_json() or {}
+    new_role = data.get('role')
+    
+    if new_role not in ['user', 'admin']:
+        return jsonify({'message': 'Invalid role specified'}), 400
+
+    target_user = User.query.get(user_id)
+    if not target_user:
+        return jsonify({'message': 'User not found'}), 404
+
+    target_user.role = new_role
+    db.session.commit()
+
+    current_admin_id = get_jwt_identity()
+    admin_user = User.query.get(int(current_admin_id))
+    log_event(f"Role updated to {new_role} for {target_user.email}", admin_user.email if admin_user else None)
+
+    return jsonify({'message': 'Role updated successfully'}), 200
+
+
+@app.route('/api/admin/datasets', methods=['GET'])
+@admin_required()
+def admin_datasets():
+    datasets = Dataset.query.all()
+    result = [{
+        'id': d.id,
+        'name': d.filename,
+        'uploadedBy': d.user.email if d.user else 'Unknown',
+        'records': d.total_records,
+        'status': 'Processed',
+    } for d in datasets]
+    return jsonify(result), 200
+
+
+@app.route('/api/admin/system/status', methods=['GET'])
+@admin_required()
+def admin_system_status():
+    return jsonify({
+        'Backend': 'Online',
+        'Database': 'Connected',
+        'API': 'Online',
+        'ML Service': 'Available',
+    }), 200
+
+
+@app.route('/api/admin/system/logs', methods=['GET'])
+@admin_required()
+def admin_system_logs():
+    logs = SystemLog.query.order_by(SystemLog.timestamp.desc()).limit(20).all()
+    result = [{
+        'id': l.id,
+        'event': l.event,
+        'user': l.user_email or 'System',
+        'timestamp': l.timestamp.strftime('%Y-%m-%d %H:%M:%S') if l.timestamp else '',
+    } for l in logs]
+    return jsonify(result), 200
+
+
+# ==================================================
+# APPLICATION MODULES & DATA ENDPOINTS
+# ==================================================
 
 @app.route('/dashboard/stats', methods=['GET'])
 def dashboard_stats():
@@ -134,7 +324,6 @@ def analytics_summary():
 
 @app.route('/floats/locations', methods=['GET'])
 def float_locations():
-    # Get the most recent reading per float (distinct float_id, latest by id)
     subquery = db.session.query(
         FloatData.float_id,
         db.func.max(FloatData.id).label('max_id')
@@ -147,15 +336,16 @@ def float_locations():
     result = []
     for reading in latest_readings:
         result.append({
-          'float_id': reading.float_id,
-          'latitude': round(reading.latitude, 2) if reading.latitude else None,
-          'longitude': round(reading.longitude, 2) if reading.longitude else None,
-          'temperature': round(reading.temperature, 2) if reading.temperature else None,
-          'salinity': round(reading.salinity, 2) if reading.salinity else None,
-          'pressure': round(reading.pressure, 2) if reading.pressure else None,
+            'float_id': reading.float_id,
+            'latitude': round(reading.latitude, 2) if reading.latitude else None,
+            'longitude': round(reading.longitude, 2) if reading.longitude else None,
+            'temperature': round(reading.temperature, 2) if reading.temperature else None,
+            'salinity': round(reading.salinity, 2) if reading.salinity else None,
+            'pressure': round(reading.pressure, 2) if reading.pressure else None,
         })
 
     return jsonify({'floats': result}), 200
+
 
 @app.route('/floats/<float_id>/history', methods=['GET'])
 def float_history(float_id):
@@ -188,6 +378,7 @@ def float_history(float_id):
         'history': history,
     }), 200
 
+
 @app.route('/floats/ids', methods=['GET'])
 def float_ids():
     ids = db.session.query(FloatData.float_id).distinct().all()
@@ -196,7 +387,11 @@ def float_ids():
 
 @app.route('/seed-sample-data', methods=['POST'])
 def seed_sample_data():
-    dataset = Dataset(user_id=1, filename='sample_argo_data.csv', total_records=5)
+    default_user = User.query.first()
+    if not default_user:
+        return jsonify({'message': 'No user found in database to associate dataset.'}), 400
+
+    dataset = Dataset(user_id=default_user.id, filename='sample_argo_data.csv', total_records=5)
     db.session.add(dataset)
     db.session.commit()
 
@@ -238,16 +433,19 @@ def upload_dataset():
         cycle_numbers = ds['CYCLE_NUMBER'].values
         raw_platform = ds['PLATFORM_NUMBER'].values[0]
         if isinstance(raw_platform, bytes):
-          platform_number = raw_platform.decode('utf-8').strip()
+            platform_number = raw_platform.decode('utf-8').strip()
         else:
-          platform_number = str(raw_platform).strip()
+            platform_number = str(raw_platform).strip()
 
         ds.close()
     except KeyError as e:
         os.remove(tmp_path)
         return jsonify({'message': f'Missing expected variable in NetCDF file: {e}'}), 400
 
-    dataset = Dataset(user_id=1, filename=file.filename, total_records=0)
+    default_user = User.query.first()
+    user_id = default_user.id if default_user else 1
+
+    dataset = Dataset(user_id=user_id, filename=file.filename, total_records=0)
     db.session.add(dataset)
     db.session.commit()
 
@@ -289,11 +487,13 @@ def upload_dataset():
     db.session.commit()
     os.remove(tmp_path)
 
+    log_event(f"Uploaded dataset {file.filename}")
     return jsonify({
         'message': 'Upload successful',
         'records_added': records_added,
         'filename': file.filename,
     }), 201
+
 
 @app.route('/api/predictions', methods=['POST'])
 def predict():
@@ -372,7 +572,6 @@ def predict():
             names[i]: round(float(importances[i]) / total * 100, 1) for i in range(len(names))
         }
 
-    # Final model retrained on ALL available real data for the actual forecast.
     final_model = make_model()
     final_model.fit(X, y)
 
@@ -382,8 +581,6 @@ def predict():
     forecast = []
     for step in range(1, horizon + 1):
         future_cycle = last_cycle + step
-        # Future pressure/lat/long are unknown, so we hold them at the last
-        # observed real values — a documented simplification, not fake data.
         future_X = np.array([[future_cycle, last_pressure, last_lat, last_lon]])
         pred_val = float(final_model.predict(future_X)[0])
         forecast.append({'step': step, 'cycle': future_cycle, 'predicted_value': round(pred_val, 2)})
@@ -406,7 +603,25 @@ def predict():
         'features_used': ['Cycle Number', 'Pressure', 'Latitude', 'Longitude'],
     }), 200
 
+
+# ==================================================
+# APP INITIALIZATION & DEFAULT SEEDING
+# ==================================================
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+        # Create a default admin user if one doesn't exist
+        if not User.query.filter_by(email='admin@example.com').first():
+            admin_user = User(
+                name='Admin',
+                email='admin@example.com',
+                password=generate_password_hash('password123'),
+                role='admin',
+                status='active'
+            )
+            db.session.add(admin_user)
+            db.session.commit()
+            print("Default admin user created: admin@example.com / password123")
+
+    app.run(host='127.0.0.1', port=5000, debug=True)

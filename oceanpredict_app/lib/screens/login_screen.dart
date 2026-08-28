@@ -3,6 +3,8 @@ import 'register_screen.dart';
 import 'forgot_password_screen.dart';
 import 'dashboard_screen.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart'; // Added AuthService import
+
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -60,32 +62,50 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 24),
               ElevatedButton(
-               onPressed: () async {
-  if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Please enter email and password')),
-    );
-    return;
-  }
+                onPressed: () async {
+                  if (_emailController.text.trim().isEmpty || _passwordController.text.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Please enter email and password')),
+                    );
+                    return;
+                  }
 
-  final result = await ApiService.login(
-    _emailController.text,
-    _passwordController.text,
-  );
+                  final result = await ApiService.login(
+                    _emailController.text.trim(),
+                    _passwordController.text,
+                  );
 
-  if (!context.mounted) return;
+                  if (!context.mounted) return;
 
-  if (result['statusCode'] == 200) {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => const DashboardScreen()),
-    );
-  } else {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result['body']['message'] ?? 'Login failed')),
-    );
-  }
-},
+                  if (result['statusCode'] == 200) {
+                    final body = result['body'] as Map<String, dynamic>;
+
+                    // Save session details to shared preferences and memory state
+                    await AuthService.saveSession(
+                      body['access_token'] ?? '',
+                      {
+                        'id': body['id'],
+                        'name': body['name'],
+                        'email': body['email'],
+                        'role': body['role'],
+                      },
+                    );
+
+                    if (!context.mounted) return;
+
+                    // Use named route or direct push replacement
+                    Navigator.pushReplacementNamed(context, '/dashboard');
+                  } else {
+                    final body = result['body'];
+                    final message = (body is Map && body.containsKey('message')) 
+                        ? body['message'] 
+                        : 'Login failed';
+                    
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(message)),
+                    );
+                  }
+                },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.cyan.shade700,
                   padding: const EdgeInsets.symmetric(vertical: 14),

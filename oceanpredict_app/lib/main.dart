@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'screens/login_screen.dart';
+import 'screens/dashboard_screen.dart';
+import 'screens/admin_screen.dart';
 import 'services/settings_service.dart';
+import 'services/auth_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AuthService.initSession(); // Restores user session from shared_preferences
   runApp(const OceanPredictApp());
 }
 
@@ -17,13 +22,20 @@ class OceanPredictApp extends StatelessWidget {
         return MaterialApp(
           title: 'OceanPredict',
           debugShowCheckedModeBanner: false,
-          
+
           // Reuses themes defined in SettingsService
           theme: SettingsService.lightTheme,
           darkTheme: SettingsService.darkTheme,
           themeMode: currentThemeMode,
 
-          home: const SplashScreen(),
+          // Named routes for app navigation
+          routes: {
+            '/': (context) => const SplashScreen(),
+            '/login': (context) => const LoginScreen(),
+            '/dashboard': (context) => const DashboardScreen(),
+            '/admin': (context) => const AdminScreen(),
+          },
+          initialRoute: '/',
         );
       },
     );
@@ -47,10 +59,13 @@ class _SplashScreenState extends State<SplashScreen> {
   Future<void> _navigateAfterDelay() async {
     await Future.delayed(const Duration(seconds: 3));
     if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => const LoginScreen()),
-    );
+
+    // Check if user session exists and direct to appropriate screen
+    if (AuthService.currentUser != null) {
+      Navigator.pushReplacementNamed(context, '/dashboard');
+    } else {
+      Navigator.pushReplacementNamed(context, '/login');
+    }
   }
 
   @override
