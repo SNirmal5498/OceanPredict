@@ -25,6 +25,11 @@ from config import Config
 app = Flask(__name__)
 app.config.from_object(Config)
 
+# Configure JWT explicit token locations & header formatting
+app.config["JWT_TOKEN_LOCATION"] = ["headers"]
+app.config["JWT_HEADER_NAME"] = "Authorization"
+app.config["JWT_HEADER_TYPE"] = "Bearer"
+
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -147,7 +152,7 @@ def login():
         user = User.query.filter_by(email=email).first()
 
         if user and check_password_hash(user.password, password):
-            # Generate real JWT identity token using the user's ID
+            # Pass user.id directly as identity string
             access_token = create_access_token(identity=str(user.id))
             log_event("User logged in", user.email)
             return jsonify({

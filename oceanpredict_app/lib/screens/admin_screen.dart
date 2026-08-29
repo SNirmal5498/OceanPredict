@@ -10,9 +10,10 @@ class AdminScreen extends StatefulWidget {
   State<AdminScreen> createState() => _AdminScreenState();
 }
 
-class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStateMixin {
+class _AdminScreenState extends State<AdminScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  
+
   bool _isLoading = true;
   bool _hasError = false;
 
@@ -95,28 +96,36 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   Future<void> _changeUserRole(dynamic user) async {
     final currentRole = user['role'] ?? 'user';
-    final newRole = currentRole.toString().toLowerCase() == 'admin' ? 'user' : 'admin';
+    final newRole =
+        currentRole.toString().toLowerCase() == 'admin' ? 'user' : 'admin';
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Change user role?'),
-        content: Text('Are you sure you want to change ${user['name'] ?? 'this user'}\'s role to $newRole?'),
+        content: Text(
+            'Are you sure you want to change ${user['name'] ?? 'this user'}\'s role to $newRole?'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Confirm')),
         ],
       ),
     );
 
     if (confirmed == true) {
-      final success = await AdminService.updateUserRole(user['id'].toString(), newRole);
+      final success =
+          await AdminService.updateUserRole(user['id'].toString(), newRole);
       if (success) {
         _loadAdminData();
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to update role. Server action not supported.')),
+            const SnackBar(
+                content: Text('Failed to update role. Action rejected.')),
           );
         }
       }
@@ -125,7 +134,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   @override
   Widget build(BuildContext context) {
-    // 1. ROUTE PROTECTION CHECK
+    // ROUTE PROTECTION CHECK
     final currentUser = AuthService.currentUser;
     if (currentUser == null || currentUser.role.toLowerCase() != 'admin') {
       return _buildAccessDeniedScreen(context);
@@ -170,8 +179,12 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                               indicatorColor: Colors.cyan.shade700,
                               tabs: const [
                                 Tab(text: 'Users', icon: Icon(Icons.people)),
-                                Tab(text: 'Datasets', icon: Icon(Icons.dataset)),
-                                Tab(text: 'System', icon: Icon(Icons.settings_suggest)),
+                                Tab(
+                                    text: 'Datasets',
+                                    icon: Icon(Icons.dataset)),
+                                Tab(
+                                    text: 'System',
+                                    icon: Icon(Icons.settings_suggest)),
                               ],
                             ),
                             const SizedBox(height: 16),
@@ -218,7 +231,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
               ),
               const SizedBox(height: 24),
               ElevatedButton.icon(
-                onPressed: () => Navigator.pushReplacementNamed(context, '/dashboard'),
+                onPressed: () =>
+                    Navigator.pushReplacementNamed(context, '/dashboard'),
                 icon: const Icon(Icons.dashboard),
                 label: const Text('Return to Dashboard'),
               ),
@@ -256,7 +270,10 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
       children: [
         Text(
           'Admin Panel',
-          style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.cyan.shade900),
+          style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: Colors.cyan.shade900),
         ),
         const SizedBox(height: 4),
         const Text(
@@ -269,15 +286,29 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   Widget _buildOverviewCards(bool isWide) {
     final cards = [
-      _statCard('Total Users', _stats['totalUsers']?.toString() ?? 'N/A', Icons.people_outline),
-      _statCard('Datasets', _stats['totalDatasets']?.toString() ?? 'N/A', Icons.folder_open),
-      _statCard('Records', _stats['totalRecords']?.toString() ?? 'N/A', Icons.table_chart_outlined),
-      _statCard('Active Users', _stats['activeUsers']?.toString() ?? 'N/A', Icons.person_pin_circle_outlined),
+      _statCard('Total Users', _stats['totalUsers']?.toString() ?? 'N/A',
+          Icons.people_outline),
+      _statCard('Datasets', _stats['totalDatasets']?.toString() ?? 'N/A',
+          Icons.folder_open),
+      _statCard('Records', _stats['totalRecords']?.toString() ?? 'N/A',
+          Icons.table_chart_outlined),
+      _statCard('Active Users', _stats['activeUsers']?.toString() ?? 'N/A',
+          Icons.person_pin_circle_outlined),
     ];
 
     return isWide
-        ? Row(children: cards.map((c) => Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4.0), child: c))).toList())
-        : Column(children: cards.map((c) => Padding(padding: const EdgeInsets.only(bottom: 8.0), child: c)).toList());
+        ? Row(
+            children: cards
+                .map((c) => Expanded(
+                    child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                        child: c)))
+                .toList())
+        : Column(
+            children: cards
+                .map((c) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8.0), child: c))
+                .toList());
   }
 
   Widget _statCard(String label, String value, IconData icon) {
@@ -296,8 +327,12 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                Text(label,
+                    style:
+                        const TextStyle(fontSize: 12, color: Colors.black54)),
+                Text(value,
+                    style: const TextStyle(
+                        fontSize: 20, fontWeight: FontWeight.bold)),
               ],
             ),
           ],
@@ -317,7 +352,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   hintText: 'Search by name or email...',
                   prefixIcon: Icon(Icons.search),
                   border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+                  contentPadding:
+                      EdgeInsets.symmetric(vertical: 0, horizontal: 12),
                 ),
                 onChanged: (val) {
                   setState(() {
@@ -352,25 +388,32 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   itemCount: _filteredUsers.length,
                   itemBuilder: (ctx, i) {
                     final u = _filteredUsers[i];
-                    final isAdmin = (u['role'] ?? '').toString().toLowerCase() == 'admin';
+                    final isAdmin =
+                        (u['role'] ?? '').toString().toLowerCase() == 'admin';
                     return Card(
                       child: ListTile(
                         leading: CircleAvatar(
-                          backgroundColor: isAdmin ? Colors.amber.shade100 : Colors.grey.shade200,
+                          backgroundColor: isAdmin
+                              ? Colors.amber.shade100
+                              : Colors.grey.shade200,
                           child: Icon(
                             isAdmin ? Icons.security : Icons.person,
-                            color: isAdmin ? Colors.amber.shade900 : Colors.grey.shade700,
+                            color: isAdmin
+                                ? Colors.amber.shade900
+                                : Colors.grey.shade700,
                           ),
                         ),
                         title: Text(u['name'] ?? 'Unknown User'),
-                        subtitle: Text('${u['email'] ?? ''}\nRole: ${u['role'] ?? 'User'} | Status: ${u['status'] ?? 'Active'}'),
+                        subtitle: Text(
+                            '${u['email'] ?? ''}\nRole: ${u['role'] ?? 'User'} | Status: ${u['status'] ?? 'Active'}'),
                         isThreeLine: true,
                         trailing: PopupMenuButton<String>(
                           onSelected: (val) {
                             if (val == 'role') _changeUserRole(u);
                           },
                           itemBuilder: (context) => [
-                            const PopupMenuItem(value: 'role', child: Text('Change Role')),
+                            const PopupMenuItem(
+                                value: 'role', child: Text('Change Role')),
                           ],
                         ),
                       ),
@@ -391,9 +434,11 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
               final d = _datasets[i];
               return Card(
                 child: ListTile(
-                  leading: const Icon(Icons.insert_drive_file, color: Colors.cyan),
+                  leading:
+                      const Icon(Icons.insert_drive_file, color: Colors.cyan),
                   title: Text(d['name'] ?? 'Dataset'),
-                  subtitle: Text('Uploaded by: ${d['uploadedBy'] ?? 'N/A'}\nRecords: ${d['records'] ?? 'N/A'} | Status: ${d['status'] ?? 'N/A'}'),
+                  subtitle: Text(
+                      'Uploaded by: ${d['uploadedBy'] ?? 'N/A'}\nRecords: ${d['records'] ?? 'N/A'} | Status: ${d['status'] ?? 'N/A'}'),
                   isThreeLine: true,
                 ),
               );
@@ -404,7 +449,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   Widget _buildSystemTab() {
     return ListView(
       children: [
-        const Text('System Status', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const Text('System Status',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         ..._systemStatus.entries.map((e) => Card(
               child: ListTile(
@@ -413,7 +459,9 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   e.value,
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: e.value.toLowerCase() == 'online' || e.value.toLowerCase() == 'connected' || e.value.toLowerCase() == 'available'
+                    color: e.value.toLowerCase() == 'online' ||
+                            e.value.toLowerCase() == 'connected' ||
+                            e.value.toLowerCase() == 'available'
                         ? Colors.green
                         : Colors.grey,
                   ),
@@ -421,12 +469,14 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
               ),
             )),
         const SizedBox(height: 24),
-        const Text('Recent Activity', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const Text('Recent Activity',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         _logs.isEmpty
             ? const Padding(
                 padding: EdgeInsets.symmetric(vertical: 16.0),
-                child: Text('No activity logs available.', style: TextStyle(color: Colors.grey)),
+                child: Text('No activity logs available.',
+                    style: TextStyle(color: Colors.grey)),
               )
             : ListView.builder(
                 shrinkWrap: true,
@@ -437,7 +487,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   return ListTile(
                     leading: const Icon(Icons.history),
                     title: Text(log['event'] ?? 'Event'),
-                    subtitle: Text('${log['user'] ?? 'N/A'} - ${log['timestamp'] ?? ''}'),
+                    subtitle: Text(
+                        '${log['user'] ?? 'N/A'} - ${log['timestamp'] ?? ''}'),
                   );
                 },
               ),

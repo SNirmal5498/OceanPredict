@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
-import 'dashboard_screen.dart';
 import '../services/api_service.dart';
-import '../services/auth_service.dart'; // Added AuthService import
+import '../services/auth_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -80,20 +79,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   if (result['statusCode'] == 200) {
                     final body = result['body'] as Map<String, dynamic>;
 
-                    // Save session details to shared preferences and memory state
+                    // Extract user object nested in backend response
+                    final userData = body['user'] as Map<String, dynamic>? ?? {};
+
+                    // Save session with correct field keys ('token' & nested 'user')
                     await AuthService.saveSession(
-                      body['access_token'] ?? '',
-                      {
-                        'id': body['id'],
-                        'name': body['name'],
-                        'email': body['email'],
-                        'role': body['role'],
-                      },
+                      body['token'] ?? '', 
+                      userData,
                     );
 
                     if (!context.mounted) return;
 
-                    // Use named route or direct push replacement
                     Navigator.pushReplacementNamed(context, '/dashboard');
                   } else {
                     final body = result['body'];

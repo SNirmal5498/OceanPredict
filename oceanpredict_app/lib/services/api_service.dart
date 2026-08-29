@@ -2,8 +2,17 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // IMPORTANT: this must match your backend IP + Flask port
+  // IMPORTANT: Match this with your backend IP + Flask port
   static const String baseUrl = 'http://127.0.0.1:5000';
+
+  // Helper method to build headers with Authorization token
+  static Map<String, String> _headers([String? token]) {
+    final map = {'Content-Type': 'application/json'};
+    if (token != null && token.isNotEmpty) {
+      map['Authorization'] = 'Bearer $token';
+    }
+    return map;
+  }
 
   // Helper method to safely decode JSON responses
   static Map<String, dynamic> _handleResponse(http.Response response) {
@@ -14,25 +23,24 @@ class ApiService {
         'body': decodedBody,
       };
     } catch (e) {
-      // Handles plain text, HTML errors (500s), or unparseable responses
       return {
         'statusCode': response.statusCode,
-        'body': {'error': 'Failed to parse response body', 'details': response.body},
+        'body': {
+          'error': 'Failed to parse response body',
+          'details': response.body
+        },
       };
     }
   }
 
+  // --- AUTH ENDPOINTS ---
   static Future<Map<String, dynamic>> register(
       String name, String email, String password) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/register'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'name': name,
-          'email': email,
-          'password': password,
-        }),
+        headers: _headers(),
+        body: jsonEncode({'name': name, 'email': email, 'password': password}),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -45,11 +53,8 @@ class ApiService {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'email': email,
-          'password': password,
-        }),
+        headers: _headers(),
+        body: jsonEncode({'email': email, 'password': password}),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -57,10 +62,75 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getAnalyticsSummary() async {
+  // --- ADMIN ENDPOINTS (WITH BEARER TOKEN) ---
+  static Future<Map<String, dynamic>> getAdminStats(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/admin/stats'),
+        headers: _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getAdminUsers(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/admin/users'),
+        headers: _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getAdminDatasets(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/admin/datasets'),
+        headers: _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getAdminLogs(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/admin/system/logs'),
+        headers: _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> updateUserRole(
+      String token, int userId, String role) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$baseUrl/api/admin/users/$userId/role'),
+        headers: _headers(token),
+        body: jsonEncode({'role': role}),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  // --- GENERAL ENDPOINTS ---
+  static Future<Map<String, dynamic>> getAnalyticsSummary([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/analytics/summary'),
+        headers: _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -68,10 +138,11 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getFloatIds() async {
+  static Future<Map<String, dynamic>> getFloatIds([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/floats/ids'),
+        headers: _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -79,10 +150,11 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getFloatHistory(String floatId) async {
+  static Future<Map<String, dynamic>> getFloatHistory(String floatId, [String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/floats/$floatId/history'),
+        headers: _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -90,10 +162,11 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getFloatLocations() async {
+  static Future<Map<String, dynamic>> getFloatLocations([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/floats/locations'),
+        headers: _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -101,10 +174,11 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getDashboardStats() async {
+  static Future<Map<String, dynamic>> getDashboardStats([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/dashboard/stats'),
+        headers: _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -113,10 +187,12 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> uploadFile(
-      List<int> fileBytes, String fileName) async {
+      List<int> fileBytes, String fileName, [String? token]) async {
     try {
-      var request =
-          http.MultipartRequest('POST', Uri.parse('$baseUrl/upload'));
+      var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/upload'));
+      if (token != null && token.isNotEmpty) {
+        request.headers['Authorization'] = 'Bearer $token';
+      }
       request.files.add(
           http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
 
