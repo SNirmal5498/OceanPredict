@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'api_service.dart';
+import 'auth_service.dart';
 import '../models/prediction_result.dart';
 
 enum PredictionErrorType { insufficientData, serviceUnavailable, invalidInput, unknown }
@@ -21,9 +22,15 @@ class PredictionService {
     required int horizon,
   }) async {
     try {
+      final token = await AuthService.getToken();
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      if (token != null && token.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $token';
+      }
+
       final response = await http.post(
         Uri.parse('${ApiService.baseUrl}/api/predictions'),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: jsonEncode({
           'model': model,
           'target': target,

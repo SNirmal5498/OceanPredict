@@ -54,6 +54,9 @@ class Dataset(db.Model):
     filename = db.Column(db.String(255), nullable=False)
     upload_date = db.Column(db.DateTime, server_default=db.func.now())
     total_records = db.Column(db.Integer, default=0)
+    file_size = db.Column(db.Integer, default=0)
+    is_active = db.Column(db.Boolean, default=True)
+    metadata_json = db.Column(db.Text, nullable=True)
     user = db.relationship('User', backref=db.backref('datasets', lazy=True))
 
 
@@ -80,6 +83,25 @@ class SystemLog(db.Model):
 # ==================================================
 # HELPERS & DECORATORS
 # ==================================================
+
+import json
+
+def get_active_dataset(user_id=None):
+    if user_id is not None:
+        ds = Dataset.query.filter_by(user_id=user_id, is_active=True).order_by(Dataset.id.desc()).first()
+        if not ds:
+            ds = Dataset.query.filter_by(user_id=user_id).order_by(Dataset.id.desc()).first()
+            if ds:
+                ds.is_active = True
+                db.session.commit()
+        return ds
+    ds = Dataset.query.filter_by(is_active=True).order_by(Dataset.id.desc()).first()
+    if not ds:
+        ds = Dataset.query.order_by(Dataset.id.desc()).first()
+        if ds:
+            ds.is_active = True
+            db.session.commit()
+    return ds
 
 def admin_required():
     def decorator(fn):
@@ -268,71 +290,174 @@ def admin_system_logs():
 
 
 # ==================================================
+# DATASET MANAGEMENT & ACTIVE DATASET ENDPOINTS
+# ==================================================
+
+@app.route('/api/datasets', methods=['GET'])
+@jwt_required()
+def get_datasets_list():
+    user_id = int(get_jwt_identity())
+    datasets = Dataset.query.filter_by(user_id=user_id).order_by(Dataset.upload_date.desc()).all()
+    res = []
+    for d in datasets:
+        meta = json.loads(d.metadata_json) if d.metadata_json else {}
+        res.append({
+            'id': d.id,
+            'filename': d.filename,
+            'upload_date': d.upload_date.strftime('%Y-%m-%d %H:%M:%S') if d.upload_date else '',
+            'total_records': d.total_records,
+            'file_size': d.file_size or 0,
+            'is_active': bool(d.is_active),
+            'metadata': meta,
+        })
+    return jsonify(res), 200
+
+
+@app.route('/api/datasets/<int:dataset_id>/activate', methods=['POST'])
+@jwt_required()
+def activate_dataset(dataset_id):
+    user_id = int(get_jwt_identity())
+    target = Dataset.query.filter_by(id=dataset_id, user_id=user_id).first()
+    if not target:
+        return jsonify({'message': 'Dataset not found or access denied'}), 404
+    Dataset.query.filter_by(user_id=user_id).update({Dataset.is_active: False})
+    target.is_active = True
+    db.session.commit()
+    user = User.query.get(user_id)
+    log_event(f"Activated dataset {target.filename}", email=user.email if user else None)
+    return jsonify({'message': f'Dataset {target.filename} is now active'}), 200
+
+
+@app.route('/api/datasets/active', methods=['GET'])
+@jwt_required()
+def get_active_dataset_info():
+    user_id = int(get_jwt_identity())
+    ds = get_active_dataset(user_id=user_id)
+    if not ds:
+        return jsonify({'active': False, 'message': 'No active dataset available'}), 200
+    meta = json.loads(ds.metadata_json) if ds.metadata_json else {}
+    return jsonify({
+        'active': True,
+        'id': ds.id,
+        'filename': ds.filename,
+        'upload_date': ds.upload_date.strftime('%Y-%m-%d %H:%M:%S') if ds.upload_date else '',
+        'total_records': ds.total_records,
+        'file_size': ds.file_size or 0,
+        'is_active': True,
+        'metadata': meta,
+    }), 200
+
+
+# ==================================================
 # APPLICATION MODULES & DATA ENDPOINTS
 # ==================================================
 
 @app.route('/dashboard/stats', methods=['GET'])
+@jwt_required()
 def dashboard_stats():
-    total_records = FloatData.query.count()
-    active_floats = db.session.query(FloatData.float_id).distinct().count()
+    user_id = int(get_jwt_identity())
+    active_ds = get_active_dataset(user_id=user_id)
+    if not active_ds:
+        return jsonify({
+            'active': False,
+            'total_records': 0,
+            'active_floats': 0,
+            'avg_temperature': None,
+            'avg_salinity': None,
+            'dataset_name': None,
+        }), 200
 
-    avg_temp = db.session.query(db.func.avg(FloatData.temperature)).scalar()
-    avg_salinity = db.session.query(db.func.avg(FloatData.salinity)).scalar()
+    query = FloatData.query.filter_by(dataset_id=active_ds.id)
+    total_records = query.count()
+    active_floats = db.session.query(FloatData.float_id).filter_by(dataset_id=active_ds.id).distinct().count()
+
+    avg_temp = db.session.query(db.func.avg(FloatData.temperature)).filter(
+        FloatData.dataset_id == active_ds.id, FloatData.temperature.isnot(None)
+    ).scalar()
+    avg_salinity = db.session.query(db.func.avg(FloatData.salinity)).filter(
+        FloatData.dataset_id == active_ds.id, FloatData.salinity.isnot(None)
+    ).scalar()
+
+    meta = json.loads(active_ds.metadata_json) if active_ds.metadata_json else {}
 
     return jsonify({
+        'active': True,
+        'dataset_id': active_ds.id,
+        'dataset_name': active_ds.filename,
+        'file_size': active_ds.file_size or 0,
+        'upload_date': active_ds.upload_date.strftime('%Y-%m-%d %H:%M:%S') if active_ds.upload_date else '',
         'total_records': total_records,
         'active_floats': active_floats,
-        'avg_temperature': round(avg_temp, 2) if avg_temp else 0,
-        'avg_salinity': round(avg_salinity, 2) if avg_salinity else 0,
+        'avg_temperature': round(avg_temp, 2) if avg_temp is not None else None,
+        'avg_salinity': round(avg_salinity, 2) if avg_salinity is not None else None,
+        'metadata': meta,
     }), 200
 
 
 @app.route('/analytics/summary', methods=['GET'])
+@jwt_required()
 def analytics_summary():
+    user_id = int(get_jwt_identity())
+    active_ds = get_active_dataset(user_id=user_id)
+    if not active_ds:
+        return jsonify({
+            'active': False,
+            'temperature': {'avg': None, 'min': None, 'max': None},
+            'salinity': {'avg': None, 'min': None, 'max': None},
+            'pressure': {'avg': None, 'max_depth': None},
+        }), 200
+
     temp_stats = db.session.query(
         db.func.avg(FloatData.temperature),
         db.func.min(FloatData.temperature),
         db.func.max(FloatData.temperature),
-    ).first()
+    ).filter(FloatData.dataset_id == active_ds.id, FloatData.temperature.isnot(None)).first()
 
     sal_stats = db.session.query(
         db.func.avg(FloatData.salinity),
         db.func.min(FloatData.salinity),
         db.func.max(FloatData.salinity),
-    ).first()
+    ).filter(FloatData.dataset_id == active_ds.id, FloatData.salinity.isnot(None)).first()
 
     pres_stats = db.session.query(
         db.func.avg(FloatData.pressure),
         db.func.max(FloatData.pressure),
-    ).first()
+    ).filter(FloatData.dataset_id == active_ds.id, FloatData.pressure.isnot(None)).first()
 
     def safe_round(val):
-        return round(val, 2) if val is not None else 0
+        return round(val, 2) if val is not None else None
 
     return jsonify({
+        'active': True,
         'temperature': {
-            'avg': safe_round(temp_stats[0]),
-            'min': safe_round(temp_stats[1]),
-            'max': safe_round(temp_stats[2]),
+            'avg': safe_round(temp_stats[0]) if temp_stats else None,
+            'min': safe_round(temp_stats[1]) if temp_stats else None,
+            'max': safe_round(temp_stats[2]) if temp_stats else None,
         },
         'salinity': {
-            'avg': safe_round(sal_stats[0]),
-            'min': safe_round(sal_stats[1]),
-            'max': safe_round(sal_stats[2]),
+            'avg': safe_round(sal_stats[0]) if sal_stats else None,
+            'min': safe_round(sal_stats[1]) if sal_stats else None,
+            'max': safe_round(sal_stats[2]) if sal_stats else None,
         },
         'pressure': {
-            'avg': safe_round(pres_stats[0]),
-            'max_depth': safe_round(pres_stats[1]),
+            'avg': safe_round(pres_stats[0]) if pres_stats else None,
+            'max_depth': safe_round(pres_stats[1]) if pres_stats else None,
         },
     }), 200
 
 
 @app.route('/floats/locations', methods=['GET'])
+@jwt_required()
 def float_locations():
+    user_id = int(get_jwt_identity())
+    active_ds = get_active_dataset(user_id=user_id)
+    if not active_ds:
+        return jsonify({'floats': []}), 200
+
     subquery = db.session.query(
         FloatData.float_id,
         db.func.max(FloatData.id).label('max_id')
-    ).group_by(FloatData.float_id).subquery()
+    ).filter(FloatData.dataset_id == active_ds.id).group_by(FloatData.float_id).subquery()
 
     latest_readings = db.session.query(FloatData).join(
         subquery, FloatData.id == subquery.c.max_id
@@ -347,17 +472,28 @@ def float_locations():
             'temperature': round(reading.temperature, 2) if reading.temperature else None,
             'salinity': round(reading.salinity, 2) if reading.salinity else None,
             'pressure': round(reading.pressure, 2) if reading.pressure else None,
+            'timestamp': reading.timestamp.strftime('%Y-%m-%d %H:%M:%S') if reading.timestamp else None,
+            'cycle_number': reading.cycle_number,
         })
 
     return jsonify({'floats': result}), 200
 
 
 @app.route('/floats/<float_id>/history', methods=['GET'])
+@jwt_required()
 def float_history(float_id):
-    readings = FloatData.query.filter_by(float_id=float_id).order_by(FloatData.id).all()
+    user_id = int(get_jwt_identity())
+    active_ds = get_active_dataset(user_id=user_id)
+    if not active_ds:
+        return jsonify({'message': 'No active dataset available'}), 404
+
+    if float_id.lower() == 'all':
+        readings = FloatData.query.filter_by(dataset_id=active_ds.id).order_by(FloatData.id).all()
+    else:
+        readings = FloatData.query.filter_by(dataset_id=active_ds.id, float_id=float_id).order_by(FloatData.id).all()
 
     if not readings:
-        return jsonify({'message': 'No data found for this float'}), 404
+        return jsonify({'message': 'No data found for this float in active dataset'}), 404
 
     history = []
     for r in readings:
@@ -368,6 +504,7 @@ def float_history(float_id):
             'temperature': round(r.temperature, 2) if r.temperature else None,
             'salinity': round(r.salinity, 2) if r.salinity else None,
             'pressure': round(r.pressure, 2) if r.pressure else None,
+            'timestamp': r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else None,
         })
 
     latest = readings[-1]
@@ -379,24 +516,74 @@ def float_history(float_id):
             'latitude': round(latest.latitude, 2) if latest.latitude else None,
             'longitude': round(latest.longitude, 2) if latest.longitude else None,
             'cycle_number': latest.cycle_number,
+            'timestamp': latest.timestamp.strftime('%Y-%m-%d %H:%M:%S') if latest.timestamp else None,
         },
         'history': history,
     }), 200
 
 
 @app.route('/floats/ids', methods=['GET'])
+@jwt_required()
 def float_ids():
-    ids = db.session.query(FloatData.float_id).distinct().all()
+    user_id = int(get_jwt_identity())
+    active_ds = get_active_dataset(user_id=user_id)
+    if not active_ds:
+        return jsonify({'float_ids': []}), 200
+    ids = db.session.query(FloatData.float_id).filter_by(dataset_id=active_ds.id).distinct().all()
     return jsonify({'float_ids': [i[0] for i in ids]}), 200
 
 
 @app.route('/seed-sample-data', methods=['POST'])
+@jwt_required()
 def seed_sample_data():
-    default_user = User.query.first()
-    if not default_user:
-        return jsonify({'message': 'No user found in database to associate dataset.'}), 400
+    user_id = int(get_jwt_identity())
+    # Deactivate existing datasets for this user
+    Dataset.query.filter_by(user_id=user_id).update({Dataset.is_active: False})
 
-    dataset = Dataset(user_id=default_user.id, filename='sample_argo_data.csv', total_records=5)
+    sample_meta = {
+        'validation': {
+            'required_columns': 'Passed',
+            'missing_values': 'Passed',
+            'duplicate_check': 'Passed',
+            'invalid_records': 'Passed',
+            'quality_flags': 'Passed',
+        },
+        'cleaning': {
+            'status': 'Completed',
+            'duplicates_removed': 0,
+            'missing_temp': 0,
+            'missing_salinity': 0,
+            'missing_pressure': 0,
+            'missing_latitude': 0,
+            'missing_longitude': 0,
+            'missing_timestamp': 0,
+            'missing_cycle': 0,
+            'total_missing': 0,
+            'rows_removed': 0,
+            'rows_retained': 5,
+            'flagged_for_review': 0,
+        },
+        'summary': {
+            'number_of_floats': 5,
+            'date_range': '2026-01-01 to 2026-01-05',
+            'temp_min': 16.2,
+            'temp_max': 22.1,
+            'sal_min': 34.8,
+            'sal_max': 35.4,
+            'pres_max': 700.0,
+            'timestamp_available': True,
+            'cycle_available': True,
+        }
+    }
+
+    dataset = Dataset(
+        user_id=user_id,
+        filename='sample_argo_data.csv',
+        total_records=5,
+        file_size=2048,
+        is_active=True,
+        metadata_json=json.dumps(sample_meta)
+    )
     db.session.add(dataset)
     db.session.commit()
 
@@ -413,95 +600,324 @@ def seed_sample_data():
         db.session.add(entry)
 
     db.session.commit()
+    user = User.query.get(user_id)
+    log_event("Seeded sample dataset", email=user.email if user else None)
     return jsonify({'message': 'Sample data seeded successfully'}), 201
 
 
 @app.route('/upload', methods=['POST'])
+@jwt_required()
 def upload_dataset():
+    user_id = int(get_jwt_identity())
     if 'file' not in request.files:
         return jsonify({'message': 'No file provided'}), 400
 
     file = request.files['file']
+    filename = file.filename or 'dataset'
+    ext = filename.split('.')[-1].lower()
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.nc') as tmp:
+    if ext not in ['csv', 'nc']:
+        return jsonify({'message': 'Unsupported file format. Only CSV and NetCDF (.nc) are supported.'}), 400
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}') as tmp:
         file.save(tmp.name)
         tmp_path = tmp.name
 
+    file_size = os.path.getsize(tmp_path)
+    raw_records = []
+
+    missing_temp = 0
+    missing_sal = 0
+    missing_pres = 0
+    missing_lat = 0
+    missing_lon = 0
+    missing_timestamp = 0
+    missing_cycle = 0
+
+    timestamp_available = False
+    cycle_available = False
+
     try:
-        ds = xr.open_dataset(tmp_path)
+        if ext == 'csv':
+            df = pd.read_csv(tmp_path)
+            # Find column names case-insensitively
+            col_map = {}
+            for col in df.columns:
+                col_lower = str(col).strip().lower()
+                col_map[col_lower] = col
 
-        latitudes = ds['LATITUDE'].values
-        longitudes = ds['LONGITUDE'].values
-        temperatures = ds['TEMP'].values
-        salinities = ds['PSAL'].values
-        pressures = ds['PRES'].values
-        cycle_numbers = ds['CYCLE_NUMBER'].values
-        raw_platform = ds['PLATFORM_NUMBER'].values[0]
-        if isinstance(raw_platform, bytes):
-            platform_number = raw_platform.decode('utf-8').strip()
-        else:
-            platform_number = str(raw_platform).strip()
+            def find_col(candidates):
+                for cand in candidates:
+                    if cand in col_map:
+                        return col_map[cand]
+                return None
 
-        ds.close()
-    except KeyError as e:
+            float_col = find_col(['float_id', 'platform_number', 'platform', 'float', 'id', 'wmo', 'platform_code'])
+            lat_col = find_col(['latitude', 'lat'])
+            lon_col = find_col(['longitude', 'lon', 'lng', 'long'])
+            temp_col = find_col(['temperature', 'temp', 'sea_water_temperature'])
+            sal_col = find_col(['salinity', 'psal', 'sal', 'sea_water_salinity'])
+            pres_col = find_col(['pressure', 'pres', 'depth', 'sea_water_pressure'])
+            time_col = find_col(['timestamp', 'date', 'time', 'datetime', 'juld'])
+            cycle_col = find_col(['cycle_number', 'cycle', 'cycle_no'])
+
+            if not (lat_col or temp_col or sal_col):
+                os.remove(tmp_path)
+                return jsonify({'message': 'CSV does not contain recognizable oceanographic columns (Latitude, Temperature, Salinity)'}), 400
+
+            for idx, row in df.iterrows():
+                f_id = str(row[float_col]).strip() if float_col and not pd.isna(row[float_col]) else 'F001'
+                
+                lat_val = float(row[lat_col]) if lat_col and not pd.isna(row[lat_col]) else None
+                lon_val = float(row[lon_col]) if lon_col and not pd.isna(row[lon_col]) else None
+                temp_val = float(row[temp_col]) if temp_col and not pd.isna(row[temp_col]) else None
+                sal_val = float(row[sal_col]) if sal_col and not pd.isna(row[sal_col]) else None
+                pres_val = float(row[pres_col]) if pres_col and not pd.isna(row[pres_col]) else None
+                cycle_val = int(row[cycle_col]) if cycle_col and not pd.isna(row[cycle_col]) else 1
+
+                ts_val = None
+                if time_col and not pd.isna(row[time_col]):
+                    try:
+                        ts_val = pd.to_datetime(row[time_col])
+                        timestamp_available = True
+                    except Exception:
+                        pass
+
+                if cycle_col and not pd.isna(row[cycle_col]):
+                    cycle_available = True
+
+                raw_records.append({
+                    'float_id': f_id,
+                    'latitude': lat_val,
+                    'longitude': lon_val,
+                    'temperature': temp_val,
+                    'salinity': sal_val,
+                    'pressure': pres_val,
+                    'cycle_number': cycle_val,
+                    'timestamp': ts_val,
+                })
+
+        elif ext == 'nc':
+            ds = xr.open_dataset(tmp_path)
+            latitudes = ds['LATITUDE'].values if 'LATITUDE' in ds else np.array([0.0])
+            longitudes = ds['LONGITUDE'].values if 'LONGITUDE' in ds else np.array([0.0])
+            temperatures = ds['TEMP'].values if 'TEMP' in ds else np.array([])
+            salinities = ds['PSAL'].values if 'PSAL' in ds else np.array([])
+            pressures = ds['PRES'].values if 'PRES' in ds else np.array([])
+            cycle_numbers = ds['CYCLE_NUMBER'].values if 'CYCLE_NUMBER' in ds else np.array([1]*len(latitudes))
+            
+            raw_platform = 'UNKNOWN'
+            if 'PLATFORM_NUMBER' in ds:
+                p_val = ds['PLATFORM_NUMBER'].values
+                if len(p_val) > 0:
+                    raw_platform = p_val[0].decode('utf-8').strip() if isinstance(p_val[0], bytes) else str(p_val[0]).strip()
+
+            ds.close()
+
+            if len(temperatures) > 0:
+                n_profiles = len(latitudes)
+                for p in range(n_profiles):
+                    if temperatures.ndim == 1:
+                        levels_temp = [temperatures[p]]
+                        levels_sal = [salinities[p]] if len(salinities) > p else [None]
+                        levels_pres = [pressures[p]] if len(pressures) > p else [None]
+                    else:
+                        levels_temp = temperatures[p]
+                        levels_sal = salinities[p]
+                        levels_pres = pressures[p]
+
+                    for level in range(len(levels_temp)):
+                        t_v = float(levels_temp[level]) if not pd.isna(levels_temp[level]) else None
+                        s_v = float(levels_sal[level]) if not pd.isna(levels_sal[level]) else None
+                        p_v = float(levels_pres[level]) if not pd.isna(levels_pres[level]) else None
+                        
+                        lat_v = float(latitudes[p]) if not pd.isna(latitudes[p]) else None
+                        lon_v = float(longitudes[p]) if not pd.isna(longitudes[p]) else None
+                        c_v = int(cycle_numbers[p]) if not pd.isna(cycle_numbers[p]) else 1
+
+                        raw_records.append({
+                            'float_id': raw_platform,
+                            'latitude': lat_v,
+                            'longitude': lon_v,
+                            'temperature': t_v,
+                            'salinity': s_v,
+                            'pressure': p_v,
+                            'cycle_number': c_v,
+                            'timestamp': None,
+                        })
+
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        return jsonify({'message': f'Error reading dataset file: {str(e)}'}), 400
+
+    if os.path.exists(tmp_path):
         os.remove(tmp_path)
-        return jsonify({'message': f'Missing expected variable in NetCDF file: {e}'}), 400
 
-    default_user = User.query.first()
-    user_id = default_user.id if default_user else 1
+    # Perform Validation & Quality Flags Analysis
+    total_raw_rows = len(raw_records)
 
-    dataset = Dataset(user_id=user_id, filename=file.filename, total_records=0)
+    # Missing counts
+    for r in raw_records:
+        if r['temperature'] is None: missing_temp += 1
+        if r['salinity'] is None: missing_sal += 1
+        if r['pressure'] is None: missing_pres += 1
+        if r['latitude'] is None: missing_lat += 1
+        if r['longitude'] is None: missing_lon += 1
+        if r['timestamp'] is None: missing_timestamp += 1
+        if r['cycle_number'] is None: missing_cycle += 1
+
+    total_missing = missing_temp + missing_sal + missing_pres + missing_lat + missing_lon
+
+    # Data Quality Flags
+    flagged_for_review = 0
+    valid_records = []
+    
+    for r in raw_records:
+        # Exclude completely broken rows (missing temp/sal/pres or lat/lon)
+        if r['latitude'] is None or r['longitude'] is None or r['temperature'] is None or r['salinity'] is None or r['pressure'] is None:
+            continue
+
+        # Check scientific bounds for quality flagging
+        is_flagged = False
+        if r['temperature'] < -2.5 or r['temperature'] > 40.0: is_flagged = True
+        if r['salinity'] < 0.0 or r['salinity'] > 50.0: is_flagged = True
+        if r['pressure'] < 0.0 or r['pressure'] > 11000.0: is_flagged = True
+        if r['latitude'] < -90.0 or r['latitude'] > 90.0: is_flagged = True
+        if r['longitude'] < -180.0 or r['longitude'] > 180.0: is_flagged = True
+
+        if is_flagged:
+            flagged_for_review += 1
+
+        valid_records.append(r)
+
+    # Duplicate Detection
+    seen_keys = set()
+    deduped_records = []
+    duplicates_count = 0
+
+    for r in valid_records:
+        key = (r['float_id'], r['cycle_number'], r['latitude'], r['longitude'], r['pressure'])
+        if key in seen_keys:
+            duplicates_count += 1
+        else:
+            seen_keys.add(key)
+            deduped_records.append(r)
+
+    rows_removed = total_raw_rows - len(deduped_records)
+    rows_retained = len(deduped_records)
+
+    # Validation Checks
+    req_columns_check = 'Passed' if len(raw_records) > 0 else 'Failed'
+    missing_check = 'Warning' if total_missing > 0 else 'Passed'
+    duplicate_check = 'Passed' if duplicates_count == 0 else 'Warning'
+    invalid_check = 'Warning' if flagged_for_review > 0 else 'Passed'
+    quality_check = 'Warning' if flagged_for_review > 0 else 'Passed'
+
+    # Cleaning Status
+    cleaning_status = 'Completed'
+    if duplicates_count > 0 or total_missing > 0 or flagged_for_review > 0:
+        cleaning_status = 'Completed with Warnings'
+    if rows_retained == 0:
+        cleaning_status = 'Failed'
+
+    # Temperature, Salinity, Pressure Ranges
+    temps = [r['temperature'] for r in deduped_records if r['temperature'] is not None]
+    sals = [r['salinity'] for r in deduped_records if r['salinity'] is not None]
+    press = [r['pressure'] for r in deduped_records if r['pressure'] is not None]
+
+    temp_min = round(min(temps), 2) if temps else None
+    temp_max = round(max(temps), 2) if temps else None
+    sal_min = round(min(sals), 2) if sals else None
+    sal_max = round(max(sals), 2) if sals else None
+    pres_max = round(max(press), 2) if press else None
+
+    distinct_floats = len(set(r['float_id'] for r in deduped_records))
+
+    meta = {
+        'validation': {
+            'required_columns': req_columns_check,
+            'missing_values': missing_check,
+            'duplicate_check': duplicate_check,
+            'invalid_records': invalid_check,
+            'quality_flags': quality_check,
+        },
+        'cleaning': {
+            'status': cleaning_status,
+            'duplicates_removed': duplicates_count,
+            'missing_temp': missing_temp,
+            'missing_salinity': missing_sal,
+            'missing_pressure': missing_pres,
+            'missing_latitude': missing_lat,
+            'missing_longitude': missing_lon,
+            'missing_timestamp': missing_timestamp,
+            'missing_cycle': missing_cycle,
+            'total_missing': total_missing,
+            'rows_removed': rows_removed,
+            'rows_retained': rows_retained,
+            'flagged_for_review': flagged_for_review,
+        },
+        'summary': {
+            'number_of_floats': distinct_floats,
+            'date_range': 'Timestamp unavailable' if not timestamp_available else 'Available',
+            'temp_min': temp_min,
+            'temp_max': temp_max,
+            'sal_min': sal_min,
+            'sal_max': sal_max,
+            'pres_max': pres_max,
+            'timestamp_available': timestamp_available,
+            'cycle_available': cycle_available,
+        }
+    }
+
+    # Deactivate existing datasets for this user so newly uploaded dataset becomes Active
+    Dataset.query.filter_by(user_id=user_id).update({Dataset.is_active: False})
+
+    dataset = Dataset(
+        user_id=user_id,
+        filename=filename,
+        total_records=rows_retained,
+        file_size=file_size,
+        is_active=True,
+        metadata_json=json.dumps(meta)
+    )
     db.session.add(dataset)
     db.session.commit()
 
-    records_added = 0
-    n_profiles = len(latitudes)
+    # Bulk insert FloatData
+    for r in deduped_records:
+        entry = FloatData(
+            dataset_id=dataset.id,
+            float_id=r['float_id'],
+            latitude=r['latitude'],
+            longitude=r['longitude'],
+            temperature=r['temperature'],
+            salinity=r['salinity'],
+            pressure=r['pressure'],
+            cycle_number=r['cycle_number'],
+            timestamp=r['timestamp'],
+        )
+        db.session.add(entry)
 
-    for p in range(n_profiles):
-        if temperatures.ndim == 1:
-            levels_temp = [temperatures[p]]
-            levels_sal = [salinities[p]]
-            levels_pres = [pressures[p]]
-        else:
-            levels_temp = temperatures[p]
-            levels_sal = salinities[p]
-            levels_pres = pressures[p]
-
-        for level in range(len(levels_temp)):
-            temp_val = levels_temp[level]
-            sal_val = levels_sal[level]
-            pres_val = levels_pres[level]
-
-            if pd.isna(temp_val) or pd.isna(sal_val) or pd.isna(pres_val):
-                continue
-
-            entry = FloatData(
-                dataset_id=dataset.id,
-                float_id=platform_number,
-                latitude=float(latitudes[p]),
-                longitude=float(longitudes[p]),
-                temperature=float(temp_val),
-                salinity=float(sal_val),
-                pressure=float(pres_val),
-                cycle_number=int(cycle_numbers[p]),
-            )
-            db.session.add(entry)
-            records_added += 1
-
-    dataset.total_records = records_added
     db.session.commit()
-    os.remove(tmp_path)
 
-    log_event(f"Uploaded dataset {file.filename}")
+    user = User.query.get(user_id)
+    log_event(f"Uploaded & activated dataset {filename}", email=user.email if user else None)
     return jsonify({
         'message': 'Upload successful',
-        'records_added': records_added,
-        'filename': file.filename,
+        'dataset_id': dataset.id,
+        'filename': filename,
+        'records_added': rows_retained,
+        'file_size': file_size,
+        'is_active': True,
+        'metadata': meta,
     }), 201
 
 
 @app.route('/api/predictions', methods=['POST'])
+@jwt_required()
 def predict():
+    user_id = int(get_jwt_identity())
     data = request.get_json() or {}
     model_type = data.get('model')
     target = data.get('target')
@@ -519,7 +935,11 @@ def predict():
     except (TypeError, ValueError):
         return jsonify({'message': 'Invalid forecast horizon'}), 400
 
-    query = FloatData.query
+    active_ds = get_active_dataset(user_id=user_id)
+    if not active_ds:
+        return jsonify({'message': 'No active dataset available for prediction'}), 400
+
+    query = FloatData.query.filter_by(dataset_id=active_ds.id)
     if float_id and float_id != 'all':
         query = query.filter_by(float_id=float_id)
     rows = query.order_by(FloatData.cycle_number.asc(), FloatData.id.asc()).all()
@@ -616,6 +1036,15 @@ def predict():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        from sqlalchemy import text
+        try:
+            db.session.execute(text('ALTER TABLE dataset ADD COLUMN IF NOT EXISTS file_size INTEGER DEFAULT 0;'))
+            db.session.execute(text('ALTER TABLE dataset ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;'))
+            db.session.execute(text('ALTER TABLE dataset ADD COLUMN IF NOT EXISTS metadata_json TEXT;'))
+            db.session.commit()
+        except Exception as e:
+            print("Database migration check note:", e)
+
         # Create a default admin user if one doesn't exist
         if not User.query.filter_by(email='admin@example.com').first():
             admin_user = User(

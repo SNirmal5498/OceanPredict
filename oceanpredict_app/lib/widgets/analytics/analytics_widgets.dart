@@ -56,9 +56,17 @@ class SectionHeading extends StatelessWidget {
 // ============================================================
 class AnalyticsHeader extends StatelessWidget {
   final String? datasetName;
-  final int? recordCount;
+  final int recordCount;
+  final int floatCount;
+  final String? fileSizeText;
 
-  const AnalyticsHeader({super.key, this.datasetName, this.recordCount});
+  const AnalyticsHeader({
+    super.key,
+    required this.datasetName,
+    required this.recordCount,
+    required this.floatCount,
+    this.fileSizeText,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -92,29 +100,39 @@ class AnalyticsHeader extends StatelessWidget {
             'Understand ocean conditions through data-driven insights',
             style: TextStyle(color: Colors.white.withValues(alpha: 0.9), fontSize: 13),
           ),
-          if (datasetName != null) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.satellite_alt, color: Colors.white, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Float: $datasetName${recordCount != null ? '  •  $recordCount readings' : ''}',
-                      style: const TextStyle(color: Colors.white, fontSize: 12.5),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
             ),
-          ],
+            child: Row(
+              children: [
+                const Icon(Icons.storage_rounded, color: Colors.white, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Dataset: ${datasetName ?? 'Active Dataset'}',
+                        style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '$recordCount record${recordCount == 1 ? '' : 's'}  •  $floatCount float${floatCount == 1 ? '' : 's'}${fileSizeText != null && fileSizeText!.isNotEmpty ? '  •  $fileSizeText' : ''}',
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 12),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -130,6 +148,8 @@ class FilterPanel extends StatelessWidget {
   final ValueChanged<String?> onFloatChanged;
   final TextEditingController minDepthController;
   final TextEditingController maxDepthController;
+  final bool hasTimestamps;
+  final String dateRangeText;
   final VoidCallback onApply;
   final VoidCallback onReset;
 
@@ -140,12 +160,23 @@ class FilterPanel extends StatelessWidget {
     required this.onFloatChanged,
     required this.minDepthController,
     required this.maxDepthController,
+    this.hasTimestamps = false,
+    this.dateRangeText = 'Timestamp unavailable',
     required this.onApply,
     required this.onReset,
   });
 
   @override
   Widget build(BuildContext context) {
+    final items = <DropdownMenuItem<String>>[
+      const DropdownMenuItem(value: 'all', child: Text('All Floats')),
+      ...floatIds.map((id) => DropdownMenuItem(value: id, child: Text('Float $id', overflow: TextOverflow.ellipsis))),
+    ];
+
+    final effectiveValue = (selectedFloatId != null && (selectedFloatId == 'all' || floatIds.contains(selectedFloatId)))
+        ? selectedFloatId
+        : 'all';
+
     return SoftCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -153,15 +184,13 @@ class FilterPanel extends StatelessWidget {
           const Text('Filters', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
-            initialValue: selectedFloatId,
+            value: effectiveValue,
             decoration: const InputDecoration(
               labelText: 'Float ID',
               border: OutlineInputBorder(),
               isDense: true,
             ),
-            items: floatIds
-                .map((id) => DropdownMenuItem(value: id, child: Text(id, overflow: TextOverflow.ellipsis)))
-                .toList(),
+            items: items,
             onChanged: onFloatChanged,
           ),
           const SizedBox(height: 12),
@@ -193,44 +222,66 @@ class FilterPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          Opacity(
-            opacity: 0.5,
-            child: IgnorePointer(
-              child: Row(
-                children: [
-                  Expanded(
+          Row(
+            children: [
+              Expanded(
+                child: Opacity(
+                  opacity: hasTimestamps ? 1.0 : 0.55,
+                  child: IgnorePointer(
+                    ignoring: !hasTimestamps,
                     child: InputDecorator(
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Date Range',
-                        border: OutlineInputBorder(),
+                        enabled: hasTimestamps,
+                        border: const OutlineInputBorder(),
                         isDense: true,
+                        fillColor: hasTimestamps ? null : Colors.grey.shade100,
+                        filled: !hasTimestamps,
                       ),
-                      child: const Text('Not available yet', style: TextStyle(fontSize: 12.5)),
+                      child: Text(
+                        hasTimestamps ? dateRangeText : 'Date filtering unavailable',
+                        style: TextStyle(fontSize: 12, color: hasTimestamps ? Colors.black87 : Colors.grey.shade600),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Opacity(
+                  opacity: 0.55,
+                  child: IgnorePointer(
+                    ignoring: true,
                     child: InputDecorator(
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Region',
-                        border: OutlineInputBorder(),
+                        enabled: false,
+                        border: const OutlineInputBorder(),
                         isDense: true,
+                        fillColor: Colors.grey.shade100,
+                        filled: true,
                       ),
-                      child: const Text('Not available yet', style: TextStyle(fontSize: 12.5)),
+                      child: Text(
+                        'Region filtering unavailable',
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
-                ],
+                ),
+              ),
+            ],
+          ),
+          if (!hasTimestamps)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, bottom: 2),
+              child: Text(
+                'Date filtering unavailable because this dataset has no timestamp field.',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
               ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 4, bottom: 4),
-            child: Text(
-              'Date Range and Region filters need extra dataset fields not yet stored by the backend.',
-              style: TextStyle(fontSize: 11, color: Colors.grey.shade500, fontStyle: FontStyle.italic),
-            ),
-          ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
@@ -304,12 +355,15 @@ class StatisticCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          Text('Average: $avg', style: const TextStyle(fontSize: 13)),
+          Text('Average: $avg', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           if (showMinMax) ...[
+            const SizedBox(height: 2),
             Text('Min: $min', style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600)),
             Text('Max: $max', style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600)),
-          ] else
-            Text('Max: $max', style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600)),
+          ] else ...[
+            const SizedBox(height: 2),
+            Text('Max Depth: $max', style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600)),
+          ],
         ],
       ),
     );
@@ -317,7 +371,7 @@ class StatisticCard extends StatelessWidget {
 }
 
 // ============================================================
-// Ocean Health Card (uses OceanHealthResult from the service file)
+// Ocean Health Card
 // ============================================================
 class OceanHealthCard extends StatelessWidget {
   final OceanHealthResult result;
@@ -378,27 +432,41 @@ class OceanHealthCard extends StatelessWidget {
           if (result.factors.isNotEmpty) ...[
             const Divider(height: 26),
             ...result.factors.entries.map(
-              (e) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  children: [
-                    SizedBox(width: 140, child: Text(e.key, style: const TextStyle(fontSize: 12.5))),
-                    Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: LinearProgressIndicator(
-                          value: (e.value / 100).clamp(0, 1),
-                          minHeight: 7,
-                          backgroundColor: Colors.grey.shade200,
-                          color: Colors.cyan.shade600,
+              (e) {
+                final val = e.value;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 140, child: Text(e.key, style: const TextStyle(fontSize: 12.5))),
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: LinearProgressIndicator(
+                            value: val == null ? 0 : (val / 100).clamp(0, 1),
+                            minHeight: 7,
+                            backgroundColor: Colors.grey.shade200,
+                            color: val == null ? Colors.transparent : Colors.cyan.shade600,
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text('${e.value.round()}', style: const TextStyle(fontSize: 11.5)),
-                  ],
-                ),
-              ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 32,
+                        child: Text(
+                          val == null ? 'N/A' : '${val.round()}',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: val == null ? FontWeight.bold : FontWeight.normal,
+                            color: val == null ? Colors.grey.shade600 : Colors.black87,
+                          ),
+                          textAlign: TextAlign.end,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
           ],
         ],
@@ -429,7 +497,7 @@ class AIInsightCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           if (insights.isEmpty)
-            Text('Not enough data yet to generate insights.', style: TextStyle(color: Colors.grey.shade600, fontSize: 13))
+            Text('Not enough data available to generate insights.', style: TextStyle(color: Colors.grey.shade600, fontSize: 13))
           else
             ...insights.map(
               (s) => Padding(
@@ -437,7 +505,7 @@ class AIInsightCard extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('•  ', style: TextStyle(fontSize: 13)),
+                    const Text('•  ', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                     Expanded(child: Text(s, style: const TextStyle(fontSize: 13))),
                   ],
                 ),
@@ -456,6 +524,7 @@ class AnomalyEntry {
   final String parameter;
   final String floatId;
   final double value;
+  final double depth;
   final String expectedRange;
   final String severity;
 
@@ -463,6 +532,7 @@ class AnomalyEntry {
     required this.parameter,
     required this.floatId,
     required this.value,
+    required this.depth,
     required this.expectedRange,
     required this.severity,
   });
@@ -470,7 +540,13 @@ class AnomalyEntry {
 
 class AnomalyCard extends StatelessWidget {
   final List<AnomalyEntry> anomalies;
-  const AnomalyCard({super.key, required this.anomalies});
+  final bool hasSufficientData;
+
+  const AnomalyCard({
+    super.key,
+    required this.anomalies,
+    this.hasSufficientData = true,
+  });
 
   Color _severityColor(String s) {
     switch (s) {
@@ -491,12 +567,25 @@ class AnomalyCard extends StatelessWidget {
         children: [
           const Text('Detected Anomalies', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
           const SizedBox(height: 10),
-          if (anomalies.isEmpty)
+          if (!hasSufficientData)
+            Row(
+              children: [
+                Icon(Icons.info_outline, color: Colors.blue.shade700, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Insufficient data for anomaly detection (minimum 3 observations required).',
+                    style: TextStyle(fontSize: 12.5, color: Colors.grey.shade700),
+                  ),
+                ),
+              ],
+            )
+          else if (anomalies.isEmpty)
             const Row(
               children: [
                 Icon(Icons.check_circle, color: Colors.green, size: 18),
                 SizedBox(width: 8),
-                Text('No significant anomalies detected.', style: TextStyle(fontSize: 13)),
+                Text('No significant anomalies detected in active dataset.', style: TextStyle(fontSize: 13)),
               ],
             )
           else
@@ -527,8 +616,10 @@ class AnomalyCard extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    Text('Float ${a.floatId}  •  Value: ${a.value.toStringAsFixed(2)}  •  Expected: ${a.expectedRange}',
-                        style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700)),
+                    Text(
+                      'Float ${a.floatId.isEmpty || a.floatId == 'all' ? 'F001' : a.floatId}  •  Depth: ${a.depth.toStringAsFixed(1)} dbar  •  Value: ${a.value.toStringAsFixed(2)}${a.parameter == 'Temperature' ? '°C' : ' PSU'}  •  Expected range: ${a.expectedRange}',
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700),
+                    ),
                   ],
                 ),
               ),
@@ -549,7 +640,7 @@ class AnalysisSummaryCard extends StatelessWidget {
   final String avgTemp;
   final String avgSalinity;
   final String maxDepth;
-  final int anomalyCount;
+  final String anomalyStatus;
 
   const AnalysisSummaryCard({
     super.key,
@@ -559,7 +650,7 @@ class AnalysisSummaryCard extends StatelessWidget {
     required this.avgTemp,
     required this.avgSalinity,
     required this.maxDepth,
-    required this.anomalyCount,
+    required this.anomalyStatus,
   });
 
   @override
@@ -567,10 +658,19 @@ class AnalysisSummaryCard extends StatelessWidget {
     Widget row(String label, String value) => Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5)),
-              Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+              Expanded(
+                child: Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5)),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Text(
+                  value,
+                  textAlign: TextAlign.end,
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5),
+                ),
+              ),
             ],
           ),
         );
@@ -587,12 +687,14 @@ class AnalysisSummaryCard extends StatelessWidget {
           row('Average Temperature', avgTemp),
           row('Average Salinity', avgSalinity),
           row('Maximum Depth', maxDepth),
-          row('Anomalies Detected', '$anomalyCount'),
+          row('Anomalies Detected', anomalyStatus),
         ],
       ),
     );
   }
 }
+
+
 
 // ============================================================
 // Loading skeleton
@@ -613,3 +715,4 @@ class SkeletonBlock extends StatelessWidget {
     );
   }
 }
+

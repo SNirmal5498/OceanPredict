@@ -17,7 +17,7 @@ enum _LoadState { loading, error, empty, ready }
 class _AnalyticsScreenState extends State<AnalyticsScreen> {
   _LoadState _state = _LoadState.loading;
 
-  Map<String, dynamic>? _summary; // from existing /analytics/summary
+  Map<String, dynamic>? _activeDataset;
   List<String> _floatIds = [];
   String? _selectedFloatId;
   List<DepthReading> _rawReadings = [];
@@ -42,28 +42,33 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   Future<void> _loadInitial() async {
     setState(() => _state = _LoadState.loading);
 
-    final idsResult = await ApiService.getFloatIds();
+    final activeResult = await ApiService.getActiveDataset();
     final summaryResult = await ApiService.getAnalyticsSummary();
+    final idsResult = await ApiService.getFloatIds();
     if (!mounted) return;
 
-    if (idsResult['statusCode'] != 200 || summaryResult['statusCode'] != 200) {
+    if (activeResult['statusCode'] != 200 ||
+        summaryResult['statusCode'] != 200 ||
+        idsResult['statusCode'] != 200) {
       setState(() => _state = _LoadState.error);
       return;
     }
 
-    final ids = List<String>.from(idsResult['body']['float_ids']);
-    if (ids.isEmpty) {
+    final activeBody = activeResult['body'];
+    if (activeBody['active'] != true) {
       setState(() => _state = _LoadState.empty);
       return;
     }
 
+    final ids = List<String>.from(idsResult['body']['float_ids'] ?? []);
+
     setState(() {
+      _activeDataset = activeBody;
       _floatIds = ids;
-      _selectedFloatId = ids.first;
-      _summary = summaryResult['body'];
+      _selectedFloatId = 'all';
     });
 
-    await _loadFloatHistory(ids.first);
+    await _loadFloatHistory('all');
   }
 
   Future<void> _loadFloatHistory(String floatId) async {
@@ -79,7 +84,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       return;
     }
 
-    final history = result['body']['history'] as List<dynamic>;
+    final history = result['body']['history'] as List<dynamic>? ?? [];
     final readings = history
         .where((h) => h['temperature'] != null && h['salinity'] != null && h['pressure'] != null)
         .map((h) => DepthReading(
@@ -87,7 +92,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               salinity: (h['salinity'] as num).toDouble(),
               pressure: (h['pressure'] as num).toDouble(),
               cycleNumber: (h['cycle_number'] as num?)?.toInt() ?? 0,
-              floatId: floatId,
+              floatId: (h['float_id'] as String?) ?? floatId,
+              timestamp: h['timestamp'] as String?,
             ))
         .toList();
 
@@ -114,55 +120,157 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   void _resetFilters() {
     _minDepthController.clear();
     _maxDepthController.clear();
-    setState(() => _displayedReadings = _rawReadings);
+    setState(() {
+      _selectedFloatId = 'all';
+      _displayedReadings = _rawReadings;
+    });
+    _loadFloatHistory('all');
   }
 
   List<AnomalyEntry> _computeAnomalies() {
-    if (_displayedReadings.isEmpty) return [];
-    final temps = _displayedReadings.map((r) => r.temperature).toList();
-    final sals = _displayedReadings.map((r) => r.salinity).toList();
+    if (_displayedReadings.length < 3) return [];
 
     final entries = <AnomalyEntry>[];
-    final tempMean = DataStats.mean(temps);
-    final tempSd = DataStats.stdDev(temps);
-    for (final i in DataStats.anomalyIndices(temps)) {
-      entries.add(AnomalyEntry(
-        parameter: 'Temperature',
-        floatId: _displayedReadings[i].floatId,
-        value: temps[i],
-        expectedRange: '${(tempMean - tempSd).toStringAsFixed(1)} - ${(tempMean + tempSd).toStringAsFixed(1)}°C',
-        severity: DataStats.severityFor(temps[i], tempMean, tempSd),
-      ));
+
+    // Depth bands for profile stratification (0-100, 100-300, 300-600, 600-1000, 1000+)
+    int getDepthBand(double pressure) {
+      if (pressure < 100) return 0;
+      if (pressure < 300) return 1;
+      if (pressure < 600) return 2;
+      if (pressure < 1000) return 3;
+      return 4;
     }
 
-    final salMean = DataStats.mean(sals);
-    final salSd = DataStats.stdDev(sals);
-    for (final i in DataStats.anomalyIndices(sals)) {
-      entries.add(AnomalyEntry(
-        parameter: 'Salinity',
-        floatId: _displayedReadings[i].floatId,
-        value: sals[i],
-        expectedRange: '${(salMean - salSd).toStringAsFixed(1)} - ${(salMean + salSd).toStringAsFixed(1)} PSU',
-        severity: DataStats.severityFor(sals[i], salMean, salSd),
-      ));
+    void detectForParameter({
+      required String parameter,
+      required String unit,
+      required double Function(DepthReading r) getValue,
+    }) {
+      final allValues = _displayedReadings.map(getValue).toList();
+      final globalQ1 = DataStats.percentile(allValues, 0.25);
+      final globalQ3 = DataStats.percentile(allValues, 0.75);
+      final globalIqr = (globalQ3 - globalQ1).abs();
+      final effectiveGlobalIqr = globalIqr < 0.05
+          ? (DataStats.mean(allValues).abs() * 0.05).clamp(0.2, 5.0)
+          : globalIqr;
+      final globalLower = globalQ1 - 1.5 * effectiveGlobalIqr;
+      final globalUpper = globalQ3 + 1.5 * effectiveGlobalIqr;
+
+      // Group readings by depth band
+      final bandReadings = <int, List<DepthReading>>{};
+      for (final r in _displayedReadings) {
+        final b = getDepthBand(r.pressure);
+        bandReadings.putIfAbsent(b, () => []).add(r);
+      }
+
+      // Precalculate IQR bounds per depth band if band has >= 4 observations
+      final bandBounds = <int, ({double lower, double upper, double iqr})>{};
+      bandReadings.forEach((band, readingsInBand) {
+        if (readingsInBand.length >= 4) {
+          final bandVals = readingsInBand.map(getValue).toList();
+          final q1 = DataStats.percentile(bandVals, 0.25);
+          final q3 = DataStats.percentile(bandVals, 0.75);
+          double iqr = (q3 - q1).abs();
+          if (iqr < 0.05) {
+            iqr = (DataStats.mean(bandVals).abs() * 0.05).clamp(0.2, 5.0);
+          }
+          bandBounds[band] = (
+            lower: q1 - 1.5 * iqr,
+            upper: q3 + 1.5 * iqr,
+            iqr: iqr,
+          );
+        }
+      });
+
+      // Evaluate each reading against depth-band bounds or global bounds
+      for (final r in _displayedReadings) {
+        final val = getValue(r);
+        final band = getDepthBand(r.pressure);
+        final bounds = bandBounds[band] ??
+            (lower: globalLower, upper: globalUpper, iqr: effectiveGlobalIqr);
+
+        if (val < bounds.lower || val > bounds.upper) {
+          final dev = val < bounds.lower ? (bounds.lower - val) : (val - bounds.upper);
+          String severity;
+          if (dev >= 2.0 * bounds.iqr) {
+            severity = 'High';
+          } else if (dev >= 1.0 * bounds.iqr) {
+            severity = 'Medium';
+          } else {
+            severity = 'Low';
+          }
+
+          final floatLabel = (r.floatId.isNotEmpty && r.floatId != 'all') ? r.floatId : 'F001';
+
+          entries.add(AnomalyEntry(
+            parameter: parameter,
+            floatId: floatLabel,
+            value: val,
+            depth: r.pressure,
+            expectedRange: '${bounds.lower.toStringAsFixed(2)}–${bounds.upper.toStringAsFixed(2)} $unit',
+            severity: severity,
+          ));
+        }
+      }
     }
+
+    detectForParameter(
+      parameter: 'Temperature',
+      unit: '°C',
+      getValue: (r) => r.temperature,
+    );
+
+    detectForParameter(
+      parameter: 'Salinity',
+      unit: 'PSU',
+      getValue: (r) => r.salinity,
+    );
+
     return entries;
   }
 
   List<String> _buildInsights() {
-    if (_summary == null) return [];
-    final temp = _summary!['temperature'];
-    final sal = _summary!['salinity'];
-    final pres = _summary!['pressure'];
+    if (_displayedReadings.isEmpty) {
+      return ['Not enough data available to generate insights.'];
+    }
+
+    if (_displayedReadings.length < 2) {
+      final r = _displayedReadings.first;
+      return [
+        'Single observation recorded: ${r.temperature}°C, ${r.salinity} PSU at ${r.pressure} dbar.',
+        'Insufficient observations for reliable anomaly analysis (minimum 3 required).',
+        'Upload additional profiling float data to generate multi-point depth trends.',
+      ];
+    }
+
+    final temps = _displayedReadings.map((r) => r.temperature).toList();
+    final sals = _displayedReadings.map((r) => r.salinity).toList();
+    final press = _displayedReadings.map((r) => r.pressure).toList();
+
+    final avgTemp = (temps.reduce((a, b) => a + b) / temps.length).toStringAsFixed(2);
+    final maxTemp = temps.reduce((a, b) => a > b ? a : b).toStringAsFixed(2);
+    final maxPres = press.reduce((a, b) => a > b ? a : b).toStringAsFixed(1);
+    final minSal = sals.reduce((a, b) => a < b ? a : b).toStringAsFixed(2);
+    final maxSal = sals.reduce((a, b) => a > b ? a : b).toStringAsFixed(2);
+
     final anomalies = _computeAnomalies();
 
     return [
-      'Average temperature is ${temp['avg']}°C.',
-      'The highest recorded temperature is ${temp['max']}°C.',
-      'Maximum observed pressure is ${pres['max_depth']} dbar.',
-      'Salinity varies between ${sal['min']} and ${sal['max']} PSU.',
-      anomalies.isEmpty ? 'No significant anomaly detected.' : 'Temperature or salinity anomaly detected.',
+      'Average temperature is $avgTemp°C across ${_displayedReadings.length} observations.',
+      'Highest recorded temperature is $maxTemp°C.',
+      'Maximum observed pressure/depth is $maxPres dbar.',
+      'Salinity ranges between $minSal and $maxSal PSU.',
+      anomalies.isEmpty
+          ? 'No significant anomalies detected in current active dataset.'
+          : '${anomalies.length} oceanographic anomaly detected.',
     ];
+  }
+
+  String _formatFileSize(int? bytes) {
+    if (bytes == null || bytes <= 0) return '';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
   }
 
   @override
@@ -216,11 +324,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           const SizedBox(height: 60),
           Icon(Icons.storage_outlined, size: 48, color: Colors.grey.shade400),
           const SizedBox(height: 12),
-          const Center(child: Text('No dataset available', style: TextStyle(fontWeight: FontWeight.bold))),
+          const Center(child: Text('No active dataset available', style: TextStyle(fontWeight: FontWeight.bold))),
           const SizedBox(height: 6),
           Center(
             child: Text(
-              'Upload an Argo Float dataset to begin analysis.',
+              'Upload or select an active Argo Float dataset to begin analysis.',
               style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
             ),
           ),
@@ -239,49 +347,69 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       );
     }
 
-    // ready
-    final temp = _summary!['temperature'];
-    final sal = _summary!['salinity'];
-    final pres = _summary!['pressure'];
+    // Ready state
+    final activeDatasetName = _activeDataset?['filename'] ?? 'Active Dataset';
+    final activeTotalRecords = _activeDataset?['total_records'] as int? ?? _displayedReadings.length;
+    final metaSummary = _activeDataset?['metadata']?['summary'] ?? {};
+    final bool hasTimestamps = metaSummary['timestamp_available'] == true ||
+        _displayedReadings.any((r) => r.timestamp != null && r.timestamp!.isNotEmpty);
+    final String dateRange = metaSummary['date_range'] ?? 'Timestamp unavailable';
+
+    final temps = _displayedReadings.map((r) => r.temperature).toList();
+    final sals = _displayedReadings.map((r) => r.salinity).toList();
+    final press = _displayedReadings.map((r) => r.pressure).toList();
+
+    final double? avgT = temps.isNotEmpty ? temps.reduce((a, b) => a + b) / temps.length : null;
+    final double? minT = temps.isNotEmpty ? temps.reduce((a, b) => a < b ? a : b) : null;
+    final double? maxT = temps.isNotEmpty ? temps.reduce((a, b) => a > b ? a : b) : null;
+
+    final double? avgS = sals.isNotEmpty ? sals.reduce((a, b) => a + b) / sals.length : null;
+    final double? minS = sals.isNotEmpty ? sals.reduce((a, b) => a < b ? a : b) : null;
+    final double? maxS = sals.isNotEmpty ? sals.reduce((a, b) => a > b ? a : b) : null;
+
+    final double? maxP = press.isNotEmpty ? press.reduce((a, b) => a > b ? a : b) : null;
+    final double? avgP = press.isNotEmpty ? press.reduce((a, b) => a + b) / press.length : null;
 
     final health = OceanHealthService.calculate(
-      avgTemp: (temp['avg'] as num?)?.toDouble(),
-      minTemp: (temp['min'] as num?)?.toDouble(),
-      maxTemp: (temp['max'] as num?)?.toDouble(),
-      avgSalinity: (sal['avg'] as num?)?.toDouble(),
-      minSalinity: (sal['min'] as num?)?.toDouble(),
-      maxSalinity: (sal['max'] as num?)?.toDouble(),
-      maxPressure: (pres['max_depth'] as num?)?.toDouble(),
+      avgTemp: avgT,
+      minTemp: minT,
+      maxTemp: maxT,
+      avgSalinity: avgS,
+      minSalinity: minS,
+      maxSalinity: maxS,
+      maxPressure: maxP,
+      observationCount: _displayedReadings.length,
     );
 
+    final tempTrend = _displayedReadings.length < 2 ? 'Insufficient data' : DataStats.trendDirection(temps);
+    final salTrend = _displayedReadings.length < 2 ? 'Insufficient data' : DataStats.trendDirection(sals);
     final anomalies = _computeAnomalies();
-    final tempTrend = DataStats.trendDirection(_displayedReadings.map((r) => r.temperature).toList());
-    final salTrend = DataStats.trendDirection(_displayedReadings.map((r) => r.salinity).toList());
+    final String anomalyStatus = _displayedReadings.length < 3 ? 'Not evaluated' : '${anomalies.length}';
 
     final statCards = [
       StatisticCard(
         title: 'Temperature',
         icon: Icons.thermostat_outlined,
         color: Colors.orange.shade700,
-        avg: '${temp['avg']} °C',
-        min: '${temp['min']} °C',
-        max: '${temp['max']} °C',
+        avg: avgT != null ? '${avgT.toStringAsFixed(2)} °C' : 'N/A',
+        min: minT != null ? '${minT.toStringAsFixed(2)} °C' : 'N/A',
+        max: maxT != null ? '${maxT.toStringAsFixed(2)} °C' : 'N/A',
       ),
       StatisticCard(
         title: 'Salinity',
         icon: Icons.water_drop_outlined,
         color: Colors.teal.shade700,
-        avg: '${sal['avg']} PSU',
-        min: '${sal['min']} PSU',
-        max: '${sal['max']} PSU',
+        avg: avgS != null ? '${avgS.toStringAsFixed(2)} PSU' : 'N/A',
+        min: minS != null ? '${minS.toStringAsFixed(2)} PSU' : 'N/A',
+        max: maxS != null ? '${maxS.toStringAsFixed(2)} PSU' : 'N/A',
       ),
       StatisticCard(
         title: 'Pressure',
         icon: Icons.speed_outlined,
         color: Colors.blue.shade700,
-        avg: '${pres['avg']} dbar',
+        avg: avgP != null ? '${avgP.toStringAsFixed(1)} dbar' : 'N/A',
         min: '',
-        max: '${pres['max_depth']} dbar',
+        max: maxP != null ? '${maxP.toStringAsFixed(1)} dbar' : 'N/A',
         showMinMax: false,
       ),
     ];
@@ -289,7 +417,12 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     return ListView(
       padding: EdgeInsets.symmetric(horizontal: isTablet ? 32 : 16, vertical: 16),
       children: [
-        AnalyticsHeader(datasetName: _selectedFloatId, recordCount: _displayedReadings.length),
+        AnalyticsHeader(
+          datasetName: activeDatasetName,
+          recordCount: activeTotalRecords,
+          floatCount: _floatIds.length,
+          fileSizeText: _formatFileSize(_activeDataset?['file_size'] as int?),
+        ),
         const SizedBox(height: 16),
         FilterPanel(
           floatIds: _floatIds,
@@ -301,6 +434,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           },
           minDepthController: _minDepthController,
           maxDepthController: _maxDepthController,
+          hasTimestamps: hasTimestamps,
+          dateRangeText: dateRange,
           onApply: _applyFilters,
           onReset: _resetFilters,
         ),
@@ -328,6 +463,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           values: _displayedReadings.map((r) => r.temperature).toList(),
           direction: tempTrend,
           color: Colors.orange.shade700,
+          hasTimestamps: hasTimestamps,
         ),
         const SizedBox(height: 16),
         TrendChart(
@@ -336,22 +472,26 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           values: _displayedReadings.map((r) => r.salinity).toList(),
           direction: salTrend,
           color: Colors.teal.shade700,
+          hasTimestamps: hasTimestamps,
         ),
         const SizedBox(height: 20),
         OceanHealthCard(result: health),
         const SizedBox(height: 16),
         AIInsightCard(insights: _buildInsights()),
         const SizedBox(height: 16),
-        AnomalyCard(anomalies: anomalies),
+        AnomalyCard(
+          anomalies: anomalies,
+          hasSufficientData: _displayedReadings.length >= 3,
+        ),
         const SizedBox(height: 16),
         AnalysisSummaryCard(
           observations: _displayedReadings.length,
           floatCount: _floatIds.length,
-          dateRange: 'Not available (no timestamp field yet)',
-          avgTemp: '${temp['avg']} °C',
-          avgSalinity: '${sal['avg']} PSU',
-          maxDepth: '${pres['max_depth']} dbar',
-          anomalyCount: anomalies.length,
+          dateRange: dateRange,
+          avgTemp: avgT != null ? '${avgT.toStringAsFixed(2)} °C' : 'N/A',
+          avgSalinity: avgS != null ? '${avgS.toStringAsFixed(2)} PSU' : 'N/A',
+          maxDepth: maxP != null ? '${maxP.toStringAsFixed(1)} dbar' : 'N/A',
+          anomalyStatus: anomalyStatus,
         ),
         const SizedBox(height: 20),
       ],

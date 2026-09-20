@@ -10,6 +10,7 @@ import 'reports_screen.dart';
 import 'settings_screen.dart';
 import 'admin_screen.dart';
 import '../services/api_service.dart';
+import '../services/ocean_health_service.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -20,13 +21,22 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen>
     with SingleTickerProviderStateMixin {
-  // ---- Existing real-data state (untouched logic) ----
-  String _totalRecords = '...';
-  String _activeFloats = '...';
-  String _avgTemp = '...';
-  double? _avgTempValue;
-  String _avgSalinity = '...';
-  double? _avgSalinityValue;
+  // ---- Active Dataset State ----
+  bool _hasActiveDataset = false;
+  bool _isLoading = true;
+  List<Map<String, dynamic>> _datasets = [];
+  int? _activeDatasetId;
+  String _datasetName = 'No active dataset';
+  int _fileSize = 0;
+  String _uploadDate = '';
+  
+  String _totalRecords = '0';
+  String _activeFloats = '0';
+  String _avgTemp = 'N/A';
+  String _avgSalinity = 'N/A';
+
+  OceanHealthResult? _oceanHealth;
+  List<Map<String, dynamic>> _recentActivities = [];
 
   // ---- Animation ----
   late final AnimationController _controller;
@@ -48,49 +58,104 @@ class _DashboardScreenState extends State<DashboardScreen>
     super.dispose();
   }
 
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+
   Future<void> _loadStats() async {
-    final result = await ApiService.getDashboardStats();
+    setState(() => _isLoading = true);
+
+    final statsRes = await ApiService.getDashboardStats();
+    final datasetsRes = await ApiService.getDatasets();
+    final analyticsRes = await ApiService.getAnalyticsSummary();
+    final logsRes = await ApiService.getAdminLogs('');
+
     if (!mounted) return;
 
-    if (result['statusCode'] == 200) {
-      final data = result['body'];
+    List<Map<String, dynamic>> loadedDatasets = [];
+    if (datasetsRes['statusCode'] == 200 && datasetsRes['body'] is List) {
+      loadedDatasets = List<Map<String, dynamic>>.from(datasetsRes['body']);
+    }
+
+    List<Map<String, dynamic>> loadedLogs = [];
+    if (logsRes['statusCode'] == 200 && logsRes['body'] is List) {
+      loadedLogs = List<Map<String, dynamic>>.from(logsRes['body']);
+    }
+
+    if (statsRes['statusCode'] == 200 && statsRes['body']?['active'] == true) {
+      final data = statsRes['body'];
+      final analyticsData = analyticsRes['statusCode'] == 200 ? analyticsRes['body'] : null;
+
+      final temp = analyticsData?['temperature'];
+      final sal = analyticsData?['salinity'];
+      final pres = analyticsData?['pressure'];
+
+      final tempAvg = (data['avg_temperature'] as num?)?.toDouble();
+      final salAvg = (data['avg_salinity'] as num?)?.toDouble();
+
+      OceanHealthResult? health;
+      if (tempAvg != null && salAvg != null) {
+        health = OceanHealthService.calculate(
+          avgTemp: tempAvg,
+          minTemp: (temp?['min'] as num?)?.toDouble(),
+          maxTemp: (temp?['max'] as num?)?.toDouble(),
+          avgSalinity: salAvg,
+          minSalinity: (sal?['min'] as num?)?.toDouble(),
+          maxSalinity: (sal?['max'] as num?)?.toDouble(),
+          maxPressure: (pres?['max_depth'] as num?)?.toDouble(),
+        );
+      }
+
       setState(() {
-        _totalRecords = '${data['total_records']}';
-        _activeFloats = '${data['active_floats']}';
-        _avgTempValue = (data['avg_temperature'] as num?)?.toDouble();
-        _avgSalinityValue = (data['avg_salinity'] as num?)?.toDouble();
-        _avgTemp = '${data['avg_temperature']}°C';
-        _avgSalinity = '${data['avg_salinity']}';
+        _hasActiveDataset = true;
+        _activeDatasetId = data['dataset_id'];
+        _datasetName = data['dataset_name'] ?? 'Dataset';
+        _fileSize = data['file_size'] ?? 0;
+        _totalRecords = '${data['total_records'] ?? 0}';
+        _activeFloats = '${data['active_floats'] ?? 0}';
+        _avgTemp = tempAvg != null ? '${tempAvg.toStringAsFixed(2)}°C' : 'N/A';
+        _avgSalinity = salAvg != null ? salAvg.toStringAsFixed(2) : 'N/A';
+        _oceanHealth = health;
+        _datasets = loadedDatasets;
+        _recentActivities = loadedLogs;
+        _isLoading = false;
+      });
+    } else {
+      setState(() {
+        _hasActiveDataset = false;
+        _activeDatasetId = null;
+        _datasetName = 'No active dataset';
+        _fileSize = 0;
+        _uploadDate = '';
+        _totalRecords = '0';
+        _activeFloats = '0';
+        _avgTemp = 'N/A';
+        _avgSalinity = 'N/A';
+        _oceanHealth = null;
+        _datasets = loadedDatasets;
+        _recentActivities = loadedLogs;
+        _isLoading = false;
       });
     }
   }
 
-  // Simple client-side heuristic since there's no backend health-score field.
-  // Swap this for a real API value if one is ever added.
-  ({int score, String status, Color color}) _computeOceanHealth() {
-    if (_avgTempValue == null || _avgSalinityValue == null) {
-      return (score: 0, status: 'Loading', color: Colors.grey);
+  Future<void> _switchDataset(int datasetId) async {
+    final res = await ApiService.setActiveDataset(datasetId);
+    if (res['statusCode'] == 200) {
+      await _loadStats();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Active dataset updated'),
+            backgroundColor: Colors.cyan,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
     }
-    final tempPenalty = (_avgTempValue! - 20).abs() * 2.2;
-    final salPenalty = (_avgSalinityValue! - 35).abs() * 6;
-    int score = (100 - tempPenalty - salPenalty).clamp(0, 100).round();
-
-    String status;
-    Color color;
-    if (score >= 80) {
-      status = 'Excellent';
-      color = const Color(0xFF2E7D32);
-    } else if (score >= 60) {
-      status = 'Good';
-      color = Colors.cyan.shade700;
-    } else if (score >= 40) {
-      status = 'Moderate';
-      color = Colors.orange.shade700;
-    } else {
-      status = 'Critical';
-      color = Colors.red.shade700;
-    }
-    return (score: score, status: status, color: color);
   }
 
   String _greeting() {
@@ -127,7 +192,6 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    final health = _computeOceanHealth();
     final width = MediaQuery.of(context).size.width;
     final isTablet = width >= 700;
 
@@ -162,12 +226,13 @@ class _DashboardScreenState extends State<DashboardScreen>
             ListTile(
               leading: const Icon(Icons.upload_file_outlined),
               title: const Text('Upload Dataset'),
-              onTap: () {
+              onTap: () async {
                 Navigator.pop(context);
-                Navigator.push(
+                await Navigator.push(
                   context,
                   MaterialPageRoute(builder: (context) => const UploadScreen()),
                 );
+                _loadStats();
               },
             ),
             ListTile(
@@ -279,7 +344,35 @@ class _DashboardScreenState extends State<DashboardScreen>
                 end: 0.5,
                 child: _WelcomeHeader(greeting: _greeting()),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+              if (_datasets.isNotEmpty) ...[
+                _fadeSlide(
+                  start: 0.05,
+                  end: 0.55,
+                  child: _DatasetSelectorCard(
+                    datasets: _datasets,
+                    activeDatasetId: _activeDatasetId,
+                    onChanged: (id) => _switchDataset(id),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+              if (!_hasActiveDataset && !_isLoading) ...[
+                _fadeSlide(
+                  start: 0.1,
+                  end: 0.6,
+                  child: _NoActiveDatasetCard(
+                    onUploadTap: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const UploadScreen()),
+                      );
+                      _loadStats();
+                    },
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
               _fadeSlide(
                 start: 0.1,
                 end: 0.6,
@@ -295,29 +388,41 @@ class _DashboardScreenState extends State<DashboardScreen>
               _fadeSlide(
                 start: 0.2,
                 end: 0.7,
-                child: _OceanHealthCard(
-                  score: health.score,
-                  status: health.status,
-                  color: health.color,
-                ),
+                child: _OceanHealthCard(health: _oceanHealth),
               ),
               const SizedBox(height: 20),
               _fadeSlide(
                 start: 0.25,
                 end: 0.75,
-                child: _LatestDatasetCard(totalRecords: _totalRecords),
+                child: _LatestDatasetCard(
+                  hasActive: _hasActiveDataset,
+                  datasetName: _datasetName,
+                  totalRecords: _totalRecords,
+                  fileSizeLabel: _formatBytes(_fileSize),
+                  uploadDate: _uploadDate,
+                  onUploadTap: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const UploadScreen()),
+                    );
+                    _loadStats();
+                  },
+                ),
               ),
               const SizedBox(height: 20),
               _fadeSlide(
                 start: 0.3,
                 end: 0.8,
-                child: const _RecentActivityCard(),
+                child: _RecentActivityCard(activities: _recentActivities),
               ),
               const SizedBox(height: 20),
               _fadeSlide(
                 start: 0.35,
                 end: 0.85,
-                child: _QuickActionsSection(isTablet: isTablet),
+                child: _QuickActionsSection(
+                  isTablet: isTablet,
+                  onUploadReturn: _loadStats,
+                ),
               ),
               const SizedBox(height: 20),
             ],
@@ -368,19 +473,19 @@ class _WelcomeHeader extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           const Text(
-            'Welcome back, Nirmal',
+            'OceanPredict Dashboard',
             style: TextStyle(
               color: Colors.white,
-              fontSize: 24,
+              fontSize: 22,
               fontWeight: FontWeight.bold,
             ),
           ),
           const SizedBox(height: 4),
           Text(
-            'Ocean Monitoring Dashboard',
+            'Real-Time Oceanographic Data & Floats Monitoring',
             style: TextStyle(
               color: Colors.white.withValues(alpha: 0.85),
-              fontSize: 14,
+              fontSize: 13.5,
             ),
           ),
         ],
@@ -390,7 +495,132 @@ class _WelcomeHeader extends StatelessWidget {
 }
 
 // ============================================================
-// Stat grid + redesigned cards
+// Dataset Selector Dropdown Card
+// ============================================================
+class _DatasetSelectorCard extends StatelessWidget {
+  final List<Map<String, dynamic>> datasets;
+  final int? activeDatasetId;
+  final ValueChanged<int> onChanged;
+
+  const _DatasetSelectorCard({
+    required this.datasets,
+    required this.activeDatasetId,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.cyan.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.layers_rounded, color: Colors.cyan.shade700, size: 22),
+          const SizedBox(width: 10),
+          const Text(
+            'Current Dataset:',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                value: activeDatasetId,
+                isExpanded: true,
+                hint: const Text('Select dataset'),
+                items: datasets.map((d) {
+                  final id = d['id'] as int;
+                  final name = d['filename'] as String? ?? 'Dataset #$id';
+                  return DropdownMenuItem<int>(
+                    value: id,
+                    child: Text(
+                      name,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                    ),
+                  );
+                }).toList(),
+                onChanged: (val) {
+                  if (val != null) onChanged(val);
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// No Active Dataset Empty State Card
+// ============================================================
+class _NoActiveDatasetCard extends StatelessWidget {
+  final VoidCallback onUploadTap;
+
+  const _NoActiveDatasetCard({required this.onUploadTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.amber.shade300),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: Colors.amber.shade800, size: 36),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'No active dataset',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                    color: Colors.amber.shade900,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Upload an oceanographic dataset to view live statistics and float analysis.',
+                  style: TextStyle(fontSize: 12.5, color: Colors.amber.shade900),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          ElevatedButton(
+            onPressed: onUploadTap,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.cyan.shade700,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Upload Dataset'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Stat grid + cards
 // ============================================================
 class _StatGrid extends StatelessWidget {
   final bool isTablet;
@@ -462,100 +692,120 @@ class _StatCardData {
   });
 }
 
-class _StatCard extends StatefulWidget {
+class _StatCard extends StatelessWidget {
   final _StatCardData data;
+
   const _StatCard({required this.data});
 
   @override
-  State<_StatCard> createState() => _StatCardState();
-}
-
-class _StatCardState extends State<_StatCard> {
-  double _scale = 1.0;
-
-  void _setScale(double s) => setState(() => _scale = s);
-
-  @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => _setScale(1.03),
-      onExit: (_) => _setScale(1.0),
-      child: GestureDetector(
-        onTapDown: (_) => _setScale(0.96),
-        onTapUp: (_) => _setScale(1.0),
-        onTapCancel: () => _setScale(1.0),
-        child: AnimatedScale(
-          scale: _scale,
-          duration: const Duration(milliseconds: 140),
-          curve: Curves.easeOut,
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.06),
-                  blurRadius: 16,
-                  offset: const Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: widget.data.gradient,
-                    ),
-                  ),
-                  child: Icon(widget.data.icon, color: Colors.white, size: 22),
-                ),
-                const Spacer(),
-                Text(
-                  widget.data.value,
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF1A2B3C),
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  widget.data.label,
-                  style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600),
-                ),
-              ],
-            ),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
           ),
-        ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              gradient: LinearGradient(colors: data.gradient),
+            ),
+            child: Icon(data.icon, color: Colors.white, size: 22),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                data.value,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1A2B3C),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                data.label,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
 // ============================================================
-// Ocean Health Score (circular gauge)
+// Ocean Health Card (Real service or Not available)
 // ============================================================
 class _OceanHealthCard extends StatelessWidget {
-  final int score;
-  final String status;
-  final Color color;
+  final OceanHealthResult? health;
 
-  const _OceanHealthCard({
-    required this.score,
-    required this.status,
-    required this.color,
-  });
+  const _OceanHealthCard({required this.health});
 
   @override
   Widget build(BuildContext context) {
+    if (health == null) {
+      return Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.06),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.health_and_safety_outlined, color: Colors.grey.shade500, size: 40),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Ocean Health Score',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Not available',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final score = health!.score;
+    final status = health!.status;
+    final color = health!.color;
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -572,8 +822,8 @@ class _OceanHealthCard extends StatelessWidget {
       child: Row(
         children: [
           SizedBox(
-            width: 84,
-            height: 84,
+            width: 80,
+            height: 80,
             child: CustomPaint(
               painter: _GaugePainter(
                 percentage: score / 100,
@@ -591,39 +841,65 @@ class _OceanHealthCard extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 20),
+          const SizedBox(width: 18),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Ocean Health',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  'Ocean Health Index',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '$score/100',
+                  '$score / 100',
                   style: const TextStyle(
-                    fontSize: 20,
+                    fontSize: 19,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF1A2B3C),
                   ),
                 ),
-                const SizedBox(height: 4),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    'Status: $status',
-                    style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12.5,
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        'Status: $status',
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
                     ),
-                  ),
+                    const Spacer(),
+                    InkWell(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const AnalyticsScreen()),
+                        );
+                      },
+                      child: Row(
+                        children: [
+                          Text(
+                            'View Details',
+                            style: TextStyle(
+                              color: Colors.cyan.shade700,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                          Icon(Icons.chevron_right_rounded, size: 18, color: Colors.cyan.shade700),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -682,8 +958,21 @@ class _GaugePainter extends CustomPainter {
 // Latest Dataset card
 // ============================================================
 class _LatestDatasetCard extends StatelessWidget {
+  final bool hasActive;
+  final String datasetName;
   final String totalRecords;
-  const _LatestDatasetCard({required this.totalRecords});
+  final String fileSizeLabel;
+  final String uploadDate;
+  final VoidCallback onUploadTap;
+
+  const _LatestDatasetCard({
+    required this.hasActive,
+    required this.datasetName,
+    required this.totalRecords,
+    required this.fileSizeLabel,
+    required this.uploadDate,
+    required this.onUploadTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -719,29 +1008,40 @@ class _LatestDatasetCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Latest Dataset',
+                  'Active Dataset',
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    fontSize: 15,
+                    fontSize: 14.5,
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  'argo_ocean_data.nc',
-                  style: TextStyle(color: Color(0xFF1A2B3C), fontSize: 13.5),
+                Text(
+                  datasetName,
+                  style: const TextStyle(
+                    color: Color(0xFF1A2B3C),
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '$totalRecords records  •  2.4 MB',
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5),
+                  hasActive ? '$totalRecords records  •  $fileSizeLabel' : 'No dataset active',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                 ),
               ],
             ),
           ),
-          Text(
-            'Today',
-            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-          ),
+          if (hasActive)
+            Text(
+              uploadDate.split(' ').first,
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 11.5),
+            )
+          else
+            TextButton(
+              onPressed: onUploadTap,
+              child: const Text('Upload'),
+            ),
         ],
       ),
     );
@@ -749,19 +1049,15 @@ class _LatestDatasetCard extends StatelessWidget {
 }
 
 // ============================================================
-// Recent Activity
+// Recent Activity Card (Real activities, no invented names)
 // ============================================================
 class _RecentActivityCard extends StatelessWidget {
-  const _RecentActivityCard();
+  final List<Map<String, dynamic>> activities;
+
+  const _RecentActivityCard({required this.activities});
 
   @override
   Widget build(BuildContext context) {
-    final activities = [
-      ('Dataset uploaded', Icons.check_circle, Colors.green),
-      ('Prediction completed', Icons.check_circle, Colors.green),
-      ('Report generated', Icons.check_circle, Colors.green),
-    ];
-
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -779,24 +1075,44 @@ class _RecentActivityCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Recent Activity',
+            'Recent System Activity',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
           ),
           const SizedBox(height: 12),
-          ...activities.map(
-            (a) => Padding(
+          if (activities.isEmpty)
+            Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Row(
-                children: [
-                  Icon(a.$2, color: a.$3, size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(a.$1, style: const TextStyle(fontSize: 13.5)),
-                  ),
-                ],
+              child: Text(
+                'No recent activities recorded.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
               ),
-            ),
-          ),
+            )
+          else
+            ...activities.take(5).map((a) {
+              final event = a['event'] ?? 'System Event';
+              final time = a['timestamp'] ?? '';
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle_rounded, color: Colors.green, size: 18),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        event,
+                        style: const TextStyle(fontSize: 13),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (time.isNotEmpty)
+                      Text(
+                        time.split(' ').first,
+                        style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
+                      ),
+                  ],
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -808,7 +1124,12 @@ class _RecentActivityCard extends StatelessWidget {
 // ============================================================
 class _QuickActionsSection extends StatelessWidget {
   final bool isTablet;
-  const _QuickActionsSection({required this.isTablet});
+  final VoidCallback onUploadReturn;
+
+  const _QuickActionsSection({
+    required this.isTablet,
+    required this.onUploadReturn,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -816,10 +1137,13 @@ class _QuickActionsSection extends StatelessWidget {
       (
         'Upload Dataset',
         Icons.upload_file_rounded,
-        () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const UploadScreen()),
-            ),
+        () async {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const UploadScreen()),
+          );
+          onUploadReturn();
+        },
       ),
       (
         'View Analytics',

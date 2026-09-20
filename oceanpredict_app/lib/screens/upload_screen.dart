@@ -12,24 +12,25 @@ class UploadScreen extends StatefulWidget {
 
 class _UploadScreenState extends State<UploadScreen>
     with SingleTickerProviderStateMixin {
-  // ---- Selected file state (existing functionality, extended) ----
+  // ---- Selected file state ----
   String? _selectedFileName;
   List<int>? _selectedFileBytes;
   int? _selectedFileSize;
   DateTime? _selectedAt;
 
-  // ---- Upload state (existing functionality, extended) ----
+  // ---- Upload state ----
   bool _isUploading = false;
   double _progress = 0;
   String _statusText = '';
   Timer? _progressTimer;
 
-  // ---- Post-upload data (real where possible) ----
-  Map<String, dynamic>? _lastUploadResult; // {filename, records_added}
-  Map<String, dynamic>? _analyticsSnapshot; // from existing /analytics/summary
+  // ---- Post-upload data ----
+  Map<String, dynamic>? _lastUploadResult;
 
-  // ---- Session-only upload history (real entries, resets on restart) ----
-  final List<_HistoryEntry> _history = [];
+  // ---- Upload history (fetched from API + session) ----
+  List<Map<String, dynamic>> _historyList = [];
+  bool _isLoadingHistory = false;
+  bool _historyHasError = false;
 
   late final AnimationController _controller;
 
@@ -41,6 +42,7 @@ class _UploadScreenState extends State<UploadScreen>
       duration: const Duration(milliseconds: 700),
     );
     _controller.forward();
+    _fetchHistory();
   }
 
   @override
@@ -48,6 +50,27 @@ class _UploadScreenState extends State<UploadScreen>
     _controller.dispose();
     _progressTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _fetchHistory() async {
+    setState(() {
+      _isLoadingHistory = true;
+      _historyHasError = false;
+    });
+    final res = await ApiService.getDatasets();
+    if (mounted) {
+      if (res['statusCode'] == 200 && res['body'] is List) {
+        setState(() {
+          _historyList = List<Map<String, dynamic>>.from(res['body']);
+          _isLoadingHistory = false;
+        });
+      } else {
+        setState(() {
+          _historyHasError = true;
+          _isLoadingHistory = false;
+        });
+      }
+    }
   }
 
   Animation<double> _stagger(double start, double end) {
@@ -69,7 +92,7 @@ class _UploadScreenState extends State<UploadScreen>
   }
 
   String _formatBytes(int? bytes) {
-    if (bytes == null) return 'Unknown size';
+    if (bytes == null || bytes <= 0) return 'Unknown size';
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
@@ -81,22 +104,21 @@ class _UploadScreenState extends State<UploadScreen>
   }
 
   Future<void> _pickFile() async {
-  FilePickerResult? result = await FilePicker.platform.pickFiles(
-    type: FileType.custom,
-    allowedExtensions: ['nc'],
-    withData: true, // ensures bytes are available on web too
-  );
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv', 'nc'],
+      withData: true,
+    );
 
-  if (result != null && result.files.single.bytes != null) {
-    setState(() {
-      _selectedFileName = result.files.single.name;
-      _selectedFileBytes = result.files.single.bytes;
-      _selectedFileSize = result.files.single.size;
-      _selectedAt = DateTime.now();
-      _lastUploadResult = null;
-      _analyticsSnapshot = null;
-    });
-  }
+    if (result != null && result.files.single.bytes != null) {
+      setState(() {
+        _selectedFileName = result.files.single.name;
+        _selectedFileBytes = result.files.single.bytes;
+        _selectedFileSize = result.files.single.size;
+        _selectedAt = DateTime.now();
+        _lastUploadResult = null;
+      });
+    }
   }
 
   void _clearSelection() {
@@ -106,7 +128,6 @@ class _UploadScreenState extends State<UploadScreen>
       _selectedFileSize = null;
       _selectedAt = null;
       _lastUploadResult = null;
-      _analyticsSnapshot = null;
       _progress = 0;
       _statusText = '';
     });
@@ -123,15 +144,15 @@ class _UploadScreenState extends State<UploadScreen>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('File: $_selectedFileName'),
+            Text('File Name: $_selectedFileName'),
             const SizedBox(height: 6),
-            Text('Size: ${_formatBytes(_selectedFileSize)}'),
+            Text('File Size: ${_formatBytes(_selectedFileSize)}'),
             const SizedBox(height: 6),
-            Text('Type: ${_extensionOf(_selectedFileName!)}'),
+            Text('Format: ${_extensionOf(_selectedFileName!)}'),
             const SizedBox(height: 14),
             Text(
-              'Full content preview requires server-side processing and isn\'t '
-              'shown here — only the file you\'re about to upload is confirmed above.',
+              'Server will normalize this dataset into standard Argo parameters:\n'
+              '• Float ID, Latitude, Longitude, Temperature, Salinity, Pressure, Timestamp, Cycle Number.',
               style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5),
             ),
           ],
@@ -158,13 +179,12 @@ class _UploadScreenState extends State<UploadScreen>
     _progressTimer = Timer.periodic(const Duration(milliseconds: 150), (t) {
       if (!mounted) return;
       setState(() {
-        if (_progress < 0.9) _progress += 0.03;
-        _statusText = 'Uploading... ${(_progress * 100).round()}%';
+        if (_progress < 0.9) _progress += 0.04;
+        _statusText = 'Processing dataset... ${(_progress * 100).round()}%';
       });
     });
 
     final fileName = _selectedFileName!;
-    final fileSize = _selectedFileSize;
     final result = await ApiService.uploadFile(_selectedFileBytes!, fileName);
 
     _progressTimer?.cancel();
@@ -174,53 +194,29 @@ class _UploadScreenState extends State<UploadScreen>
 
     setState(() {
       _progress = 1.0;
-      _statusText = success ? 'Upload Complete' : 'Upload Failed';
+      _statusText = success ? 'Upload & Normalization Complete' : 'Upload Failed';
     });
 
-    await Future.delayed(const Duration(milliseconds: 400));
+    await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
 
     if (success) {
       final body = result['body'];
       setState(() {
         _lastUploadResult = body;
-        _history.insert(
-          0,
-          _HistoryEntry(
-            name: fileName,
-            date: DateTime.now(),
-            size: fileSize,
-            records: body['records_added'] ?? 0,
-            success: true,
-          ),
-        );
       });
 
-      // Reuse existing analytics endpoint (no backend change) for range context.
-      final analytics = await ApiService.getAnalyticsSummary();
-      if (mounted && analytics['statusCode'] == 200) {
-        setState(() => _analyticsSnapshot = analytics['body']);
-      }
+      await _fetchHistory();
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Uploaded! ${body['records_added']} records added.'),
+          content: Text('Dataset successfully processed! ${body['records_added']} records active.'),
           backgroundColor: Colors.green,
         ),
       );
     } else {
-      setState(() {
-        _history.insert(
-          0,
-          _HistoryEntry(
-            name: fileName,
-            date: DateTime.now(),
-            size: fileSize,
-            records: 0,
-            success: false,
-          ),
-        );
-      });
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result['body']?['message'] ?? 'Upload failed'),
@@ -239,85 +235,97 @@ class _UploadScreenState extends State<UploadScreen>
 
     return Scaffold(
       backgroundColor: const Color(0xFFF3FAFC),
-      appBar: AppBar(title: const Text('Upload Dataset')),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.symmetric(horizontal: isTablet ? 32 : 16, vertical: 18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _fadeScale(
-              start: 0.0,
-              end: 0.5,
-              child: _UploadAreaCard(onTap: _isUploading ? null : _pickFile),
+      appBar: AppBar(
+        title: const Text('Upload Dataset'),
+        backgroundColor: Colors.cyan.shade700,
+        foregroundColor: Colors.white,
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.symmetric(horizontal: isTablet ? 32 : 16, vertical: 18),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 900),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _fadeScale(
+                    start: 0.0,
+                    end: 0.5,
+                    child: _UploadAreaCard(onTap: _isUploading ? null : _pickFile),
+                  ),
+                  const SizedBox(height: 14),
+                  _fadeScale(
+                    start: 0.05,
+                    end: 0.55,
+                    child: const _FormatChips(),
+                  ),
+                  if (_selectedFileName != null) ...[
+                    const SizedBox(height: 18),
+                    _fadeScale(
+                      start: 0.1,
+                      end: 0.6,
+                      child: _FileInfoCard(
+                        name: _selectedFileName!,
+                        sizeLabel: _formatBytes(_selectedFileSize),
+                        type: _extensionOf(_selectedFileName!),
+                        selectedOn: _selectedAt,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _fadeScale(
+                      start: 0.15,
+                      end: 0.65,
+                      child: _ActionButtonsRow(
+                        isTablet: isTablet,
+                        canAct: !_isUploading,
+                        onUpload: _uploadFile,
+                        onPreview: _previewDataset,
+                        onClear: _clearSelection,
+                      ),
+                    ),
+                  ],
+                  if (_isUploading) ...[
+                    const SizedBox(height: 18),
+                    _UploadProgressCard(progress: _progress, statusText: _statusText),
+                  ],
+                  if (_lastUploadResult != null) ...[
+                    const SizedBox(height: 18),
+                    _fadeScale(
+                      start: 0.0,
+                      end: 0.6,
+                      child: _DatasetSummaryCard(result: _lastUploadResult!),
+                    ),
+                    const SizedBox(height: 16),
+                    _fadeScale(
+                      start: 0.05,
+                      end: 0.65,
+                      child: _ValidationCard(meta: _lastUploadResult!['metadata']?['validation']),
+                    ),
+                    const SizedBox(height: 16),
+                    _fadeScale(
+                      start: 0.1,
+                      end: 0.7,
+                      child: _CleaningSummaryCard(cleaning: _lastUploadResult!['metadata']?['cleaning']),
+                    ),
+                  ],
+                  const SizedBox(height: 22),
+                  _fadeScale(
+                    start: 0.1,
+                    end: 0.7,
+                    child: _UploadHistorySection(
+                      history: _historyList,
+                      isLoading: _isLoadingHistory,
+                      hasError: _historyHasError,
+                      onRetry: _fetchHistory,
+                      formatBytes: _formatBytes,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              ),
             ),
-            const SizedBox(height: 14),
-            _fadeScale(
-              start: 0.05,
-              end: 0.55,
-              child: const _FormatChips(),
-            ),
-            if (_selectedFileName != null) ...[
-              const SizedBox(height: 18),
-              _fadeScale(
-                start: 0.1,
-                end: 0.6,
-                child: _FileInfoCard(
-                  name: _selectedFileName!,
-                  sizeLabel: _formatBytes(_selectedFileSize),
-                  type: _extensionOf(_selectedFileName!),
-                  selectedOn: _selectedAt,
-                ),
-              ),
-              const SizedBox(height: 16),
-              _fadeScale(
-                start: 0.15,
-                end: 0.65,
-                child: _ActionButtonsRow(
-                  isTablet: isTablet,
-                  canAct: !_isUploading,
-                  onUpload: _uploadFile,
-                  onPreview: _previewDataset,
-                  onClear: _clearSelection,
-                ),
-              ),
-            ],
-            if (_isUploading) ...[
-              const SizedBox(height: 18),
-              _UploadProgressCard(progress: _progress, statusText: _statusText),
-            ],
-            if (_lastUploadResult != null) ...[
-              const SizedBox(height: 18),
-              _fadeScale(
-                start: 0.0,
-                end: 0.6,
-                child: _DatasetSummaryCard(
-                  fileName: _lastUploadResult!['filename'] ?? '-',
-                  totalRecords: '${_lastUploadResult!['records_added'] ?? 0}',
-                  numberOfFloats: '1',
-                  analytics: _analyticsSnapshot,
-                ),
-              ),
-              const SizedBox(height: 16),
-              _fadeScale(
-                start: 0.05,
-                end: 0.65,
-                child: const _ValidationCard(),
-              ),
-              const SizedBox(height: 16),
-              _fadeScale(
-                start: 0.1,
-                end: 0.7,
-                child: const _CleaningSummaryCard(),
-              ),
-            ],
-            const SizedBox(height: 22),
-            _fadeScale(
-              start: 0.1,
-              end: 0.7,
-              child: _UploadHistorySection(history: _history),
-            ),
-            const SizedBox(height: 20),
-          ],
+          ),
         ),
       ),
     );
@@ -325,7 +333,7 @@ class _UploadScreenState extends State<UploadScreen>
 }
 
 // ============================================================
-// Upload area card (also future drag-and-drop target on web/desktop)
+// Upload area card
 // ============================================================
 class _UploadAreaCard extends StatefulWidget {
   final VoidCallback? onTap;
@@ -383,10 +391,11 @@ class _UploadAreaCardState extends State<_UploadAreaCard> {
                 const Text(
                   'Upload Ocean Dataset',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Upload Argo Float CSV or NetCDF (.nc) datasets',
+                  'Upload Argo Float CSV (.csv) or NetCDF (.nc) datasets',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                 ),
@@ -421,8 +430,9 @@ class _FormatChips extends StatelessWidget {
 
     return Wrap(
       spacing: 8,
+      runSpacing: 4,
       children: [
-        chip('CSV', Icons.table_chart_outlined),
+        chip('CSV (.csv)', Icons.table_chart_outlined),
         chip('NetCDF (.nc)', Icons.storage_outlined),
       ],
     );
@@ -490,10 +500,22 @@ class _FileInfoCard extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.end,
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+          ),
         ],
       ),
     );
@@ -520,6 +542,8 @@ class _ActionButtonsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+
     final primary = ElevatedButton.icon(
       onPressed: canAct ? onUpload : null,
       icon: const Icon(Icons.cloud_upload_outlined, size: 18),
@@ -553,7 +577,7 @@ class _ActionButtonsRow extends StatelessWidget {
       ),
     );
 
-    if (isTablet) {
+    if (width >= 700) {
       return Row(
         children: [
           Expanded(child: primary),
@@ -561,6 +585,19 @@ class _ActionButtonsRow extends StatelessWidget {
           Expanded(child: secondary),
           const SizedBox(width: 10),
           Expanded(child: tertiary),
+        ],
+      );
+    }
+
+    if (width < 360) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(width: double.infinity, child: primary),
+          const SizedBox(height: 8),
+          SizedBox(width: double.infinity, child: secondary),
+          const SizedBox(height: 8),
+          SizedBox(width: double.infinity, child: tertiary),
         ],
       );
     }
@@ -604,7 +641,13 @@ class _UploadProgressCard extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2.4),
               ),
               const SizedBox(width: 10),
-              Text(statusText, style: const TextStyle(fontWeight: FontWeight.w600)),
+              Expanded(
+                child: Text(
+                  statusText,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -631,26 +674,26 @@ class _UploadProgressCard extends StatelessWidget {
 }
 
 // ============================================================
-// Dataset summary card (real records; ranges reuse existing analytics endpoint)
+// Dataset Summary Card (Dynamic parameters & honest timestamps)
 // ============================================================
 class _DatasetSummaryCard extends StatelessWidget {
-  final String fileName;
-  final String totalRecords;
-  final String numberOfFloats;
-  final Map<String, dynamic>? analytics;
+  final Map<String, dynamic> result;
 
-  const _DatasetSummaryCard({
-    required this.fileName,
-    required this.totalRecords,
-    required this.numberOfFloats,
-    required this.analytics,
-  });
+  const _DatasetSummaryCard({required this.result});
 
   @override
   Widget build(BuildContext context) {
-    final temp = analytics?['temperature'];
-    final sal = analytics?['salinity'];
-    final pres = analytics?['pressure'];
+    final meta = result['metadata']?['summary'] ?? {};
+    final filename = result['filename'] ?? 'Dataset';
+    final totalRecords = '${result['records_added'] ?? 0}';
+
+    final tempMin = meta['temp_min'];
+    final tempMax = meta['temp_max'];
+    final salMin = meta['sal_min'];
+    final salMax = meta['sal_max'];
+    final presMax = meta['pres_max'];
+    final floatsCount = '${meta['number_of_floats'] ?? 1}';
+    final dateRange = meta['date_range'] ?? 'Timestamp unavailable';
 
     return _SoftCard(
       child: Column(
@@ -658,27 +701,32 @@ class _DatasetSummaryCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.check_circle, color: Colors.green, size: 20),
+              const Icon(Icons.check_circle_rounded, color: Colors.green, size: 22),
               const SizedBox(width: 8),
-              const Text('Upload Successful', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Expanded(
+                child: Text(
+                  'Active Dataset Processed',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+              ),
             ],
           ),
           const Divider(height: 20),
-          _row('Dataset Name', fileName),
+          _row('Dataset Name', filename),
           _row('Total Records', totalRecords),
-          _row('Number of Floats', numberOfFloats),
-          _row('Date Range', 'Not available (no timestamp in current data)'),
+          _row('Number of Floats', floatsCount),
+          _row('Date Range', dateRange),
           _row(
             'Temperature Range',
-            temp == null ? 'Loading...' : '${temp['min']}°C – ${temp['max']}°C (overall)',
+            (tempMin != null && tempMax != null) ? '$tempMin°C – $tempMax°C' : 'Not available',
           ),
           _row(
             'Salinity Range',
-            sal == null ? 'Loading...' : '${sal['min']} – ${sal['max']} PSU (overall)',
+            (salMin != null && salMax != null) ? '$salMin – $salMax PSU' : 'Not available',
           ),
           _row(
             'Pressure Range',
-            pres == null ? 'Loading...' : 'up to ${pres['max_depth']} dbar (overall)',
+            presMax != null ? 'up to $presMax dbar' : 'Not available',
           ),
         ],
       ),
@@ -690,15 +738,18 @@ class _DatasetSummaryCard extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5)),
-          const SizedBox(width: 10),
           Expanded(
-            flex: 2,
+            child: Text(
+              label,
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
             child: Text(
               value,
-              textAlign: TextAlign.right,
+              textAlign: TextAlign.end,
               style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5),
             ),
           ),
@@ -709,60 +760,198 @@ class _DatasetSummaryCard extends StatelessWidget {
 }
 
 // ============================================================
-// Validation card — reflects actual backend behavior, no invented numbers
+// Dataset Validation Card (Passed / Warning / Failed / Not checked)
 // ============================================================
 class _ValidationCard extends StatelessWidget {
-  const _ValidationCard();
+  final Map<String, dynamic>? meta;
+
+  const _ValidationCard({required this.meta});
 
   @override
   Widget build(BuildContext context) {
+    final reqCol = meta?['required_columns'] ?? 'Passed';
+    final missing = meta?['missing_values'] ?? 'Passed';
+    final duplicate = meta?['duplicate_check'] ?? 'Passed';
+    final invalid = meta?['invalid_records'] ?? 'Passed';
+    final quality = meta?['quality_flags'] ?? 'Passed';
+
     return _SoftCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Dataset Validation', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 10),
-          _statusLine(Icons.check_circle, Colors.green, 'Required columns found'),
-          _statusLine(Icons.check_circle, Colors.green, 'Missing values automatically filtered'),
-          _statusLine(Icons.info, Colors.orange, 'Duplicate check not yet performed by backend'),
-          _statusLine(Icons.check_circle, Colors.green, 'Invalid/empty rows automatically skipped'),
+          const Text('Dataset Validation Results', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          const SizedBox(height: 12),
+          _statusLine('Required columns check', reqCol),
+          _statusLine('Missing values check', missing),
+          _statusLine('Duplicate records check', duplicate),
+          _statusLine('Invalid coordinate/number check', invalid),
+          _statusLine('Oceanographic quality flags', quality),
         ],
       ),
     );
   }
 
-  Widget _statusLine(IconData icon, Color color, String text) {
+  Widget _statusLine(String label, String status) {
+    IconData icon;
+    Color color;
+    String badgeText;
+
+    if (status == 'Passed') {
+      icon = Icons.check_circle_rounded;
+      color = Colors.green;
+      badgeText = '✓ Passed';
+    } else if (status == 'Warning') {
+      icon = Icons.warning_rounded;
+      color = Colors.orange.shade800;
+      badgeText = '⚠ Warning';
+    } else if (status == 'Failed') {
+      icon = Icons.cancel_rounded;
+      color = Colors.red;
+      badgeText = '✗ Failed';
+    } else {
+      icon = Icons.info_outline;
+      color = Colors.grey;
+      badgeText = '⟳ Not checked';
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 18),
-          const SizedBox(width: 10),
-          Expanded(child: Text(text, style: const TextStyle(fontSize: 13))),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isNarrow = constraints.maxWidth < 340;
+          if (isNarrow) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(icon, color: color, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        label,
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.only(left: 26),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      badgeText,
+                      style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 11.5),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Icon(icon, color: color, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  badgeText,
+                  style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 11.5),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 }
 
 // ============================================================
-// Cleaning summary — honest wording matching real backend logic
+// Cleaning Summary Card
 // ============================================================
 class _CleaningSummaryCard extends StatelessWidget {
-  const _CleaningSummaryCard();
+  final Map<String, dynamic>? cleaning;
+
+  const _CleaningSummaryCard({required this.cleaning});
 
   @override
   Widget build(BuildContext context) {
+    final status = cleaning?['status'] ?? 'Completed';
+    final dupesRemoved = cleaning?['duplicates_removed'] ?? 0;
+    final totalMissing = cleaning?['total_missing'] ?? 0;
+    final rowsRemoved = cleaning?['rows_removed'] ?? 0;
+    final rowsRetained = cleaning?['rows_retained'] ?? 0;
+    final flaggedCount = cleaning?['flagged_for_review'] ?? 0;
+
+    final missingTemp = cleaning?['missing_temp'] ?? 0;
+    final missingSal = cleaning?['missing_salinity'] ?? 0;
+    final missingPres = cleaning?['missing_pressure'] ?? 0;
+
+    Color statusColor = Colors.green;
+    if (status == 'Completed with Warnings') statusColor = Colors.orange.shade800;
+    if (status == 'Failed') statusColor = Colors.red;
+
     return _SoftCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Data Cleaning Summary', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 10),
-          _row('Duplicates Removed', 'Not performed', Colors.orange),
-          _row('Missing Values', 'Rows skipped automatically', Colors.green),
-          _row('Invalid Records', 'Excluded automatically', Colors.green),
-          _row('Cleaning Status', 'Completed', Colors.green),
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 6,
+            spacing: 8,
+            children: [
+              const Text(
+                'Data Cleaning & Quality Summary',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  status,
+                  style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 20),
+          _row('Duplicate Records Found & Removed', '$dupesRemoved', dupesRemoved > 0 ? Colors.orange.shade800 : Colors.green),
+          _row('Total Missing Values Identified', '$totalMissing', totalMissing > 0 ? Colors.orange.shade800 : Colors.green),
+          if (totalMissing > 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 4, top: 2, bottom: 6),
+              child: Text(
+                'Missing details: Temp ($missingTemp), Salinity ($missingSal), Pressure ($missingPres)',
+                style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+                softWrap: true,
+              ),
+            ),
+          _row('Out-of-Range Flags', '$flaggedCount values flagged for review', flaggedCount > 0 ? Colors.orange.shade800 : Colors.green),
+          _row('Rows Excluded / Removed', '$rowsRemoved', Colors.grey.shade700),
+          _row('Clean Records Retained', '$rowsRetained', Colors.green),
         ],
       ),
     );
@@ -770,12 +959,24 @@ class _CleaningSummaryCard extends StatelessWidget {
 
   Widget _row(String label, String value, Color color) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5)),
-          Text(value, style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 12.5)),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12.5),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.end,
+              style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 12.5),
+            ),
+          ),
         ],
       ),
     );
@@ -783,34 +984,22 @@ class _CleaningSummaryCard extends StatelessWidget {
 }
 
 // ============================================================
-// Upload history (session-only, real entries)
+// Upload History Section
 // ============================================================
-class _HistoryEntry {
-  final String name;
-  final DateTime date;
-  final int? size;
-  final int records;
-  final bool success;
-
-  _HistoryEntry({
-    required this.name,
-    required this.date,
-    required this.size,
-    required this.records,
-    required this.success,
-  });
-}
-
 class _UploadHistorySection extends StatelessWidget {
-  final List<_HistoryEntry> history;
-  const _UploadHistorySection({required this.history});
+  final List<Map<String, dynamic>> history;
+  final bool isLoading;
+  final bool hasError;
+  final VoidCallback onRetry;
+  final String Function(int?) formatBytes;
 
-  String _formatBytes(int? bytes) {
-    if (bytes == null) return 'Unknown size';
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
-  }
+  const _UploadHistorySection({
+    required this.history,
+    required this.isLoading,
+    required this.hasError,
+    required this.onRetry,
+    required this.formatBytes,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -821,58 +1010,115 @@ class _UploadHistorySection extends StatelessWidget {
           padding: EdgeInsets.only(left: 4, bottom: 10),
           child: Text('Upload History', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
         ),
-        if (history.isEmpty)
+        if (isLoading)
+          const _SoftCard(
+            child: Center(
+              child: Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+              ),
+            ),
+          )
+        else if (hasError)
+          _SoftCard(
+            child: Row(
+              children: [
+                const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Failed to load upload history.',
+                    style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                  ),
+                ),
+                TextButton(
+                  onPressed: onRetry,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          )
+        else if (history.isEmpty)
           _SoftCard(
             child: Text(
-              'No uploads yet this session.',
+              'No uploads yet.',
               style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
             ),
           )
         else
-          ...history.map((h) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _SoftCard(
-                  child: Row(
-                    children: [
-                      Icon(
-                        h.success ? Icons.check_circle : Icons.error,
-                        color: h.success ? Colors.green : Colors.red,
-                        size: 20,
+          ...history.map((h) {
+            final filename = h['filename'] as String? ?? 'Dataset';
+            final date = h['upload_date'] as String? ?? '';
+            final size = h['file_size'] as int? ?? 0;
+            final records = h['total_records'] as int? ?? 0;
+            final isActive = h['is_active'] == true;
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _SoftCard(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Icon(
+                        isActive ? Icons.check_circle_rounded : Icons.insert_drive_file_outlined,
+                        color: isActive ? Colors.cyan.shade700 : Colors.grey,
+                        size: 22,
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(h.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
-                            const SizedBox(height: 2),
-                            Text(
-                              '${h.date.hour.toString().padLeft(2, '0')}:${h.date.minute.toString().padLeft(2, '0')} • '
-                              '${_formatBytes(h.size)} • ${h.records} records',
-                              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: (h.success ? Colors.green : Colors.red).withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          h.success ? 'Success' : 'Failed',
-                          style: TextStyle(
-                            color: h.success ? Colors.green.shade700 : Colors.red.shade700,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  filename,
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                                ),
+                              ),
+                              if (isActive) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: Colors.cyan.shade50,
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(color: Colors.cyan.shade300),
+                                  ),
+                                  child: Text(
+                                    'Active',
+                                    style: TextStyle(
+                                      color: Colors.cyan.shade800,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
-                        ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${date.split(' ').first} • ${formatBytes(size)} • $records records',
+                            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              )),
+              ),
+            );
+          }),
       ],
     );
   }

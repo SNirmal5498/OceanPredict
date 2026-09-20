@@ -1,15 +1,19 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'auth_service.dart';
 
 class ApiService {
   // IMPORTANT: Match this with your backend IP + Flask port
   static const String baseUrl = 'http://127.0.0.1:5000';
 
-  // Helper method to build headers with Authorization token
-  static Map<String, String> _headers([String? token]) {
+  // Helper method to build headers with Authorization token automatically
+  static Future<Map<String, String>> _headers([String? token]) async {
     final map = {'Content-Type': 'application/json'};
-    if (token != null && token.isNotEmpty) {
-      map['Authorization'] = 'Bearer $token';
+    final effectiveToken = (token != null && token.isNotEmpty)
+        ? token
+        : await AuthService.getToken();
+    if (effectiveToken != null && effectiveToken.isNotEmpty) {
+      map['Authorization'] = 'Bearer $effectiveToken';
     }
     return map;
   }
@@ -39,7 +43,7 @@ class ApiService {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/register'),
-        headers: _headers(),
+        headers: await _headers(),
         body: jsonEncode({'name': name, 'email': email, 'password': password}),
       );
       return _handleResponse(response);
@@ -53,7 +57,7 @@ class ApiService {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/login'),
-        headers: _headers(),
+        headers: await _headers(),
         body: jsonEncode({'email': email, 'password': password}),
       );
       return _handleResponse(response);
@@ -63,11 +67,11 @@ class ApiService {
   }
 
   // --- ADMIN ENDPOINTS (WITH BEARER TOKEN) ---
-  static Future<Map<String, dynamic>> getAdminStats(String token) async {
+  static Future<Map<String, dynamic>> getAdminStats([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/api/admin/stats'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -75,11 +79,11 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getAdminUsers(String token) async {
+  static Future<Map<String, dynamic>> getAdminUsers([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/api/admin/users'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -87,11 +91,11 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getAdminDatasets(String token) async {
+  static Future<Map<String, dynamic>> getAdminDatasets([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/api/admin/datasets'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -99,11 +103,11 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> getAdminLogs(String token) async {
+  static Future<Map<String, dynamic>> getAdminLogs([String? token]) async {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/api/admin/system/logs'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -112,11 +116,11 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> updateUserRole(
-      String token, int userId, String role) async {
+      int userId, String role, [String? token]) async {
     try {
       final response = await http.put(
         Uri.parse('$baseUrl/api/admin/users/$userId/role'),
-        headers: _headers(token),
+        headers: await _headers(token),
         body: jsonEncode({'role': role}),
       );
       return _handleResponse(response);
@@ -130,7 +134,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/analytics/summary'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -142,7 +146,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/floats/ids'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -154,7 +158,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/floats/$floatId/history'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -166,7 +170,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/floats/locations'),
-        headers: _headers(token),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -178,7 +182,43 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/dashboard/stats'),
-        headers: _headers(token),
+        headers: await _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getDatasets([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/datasets'),
+        headers: await _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getActiveDataset([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/datasets/active'),
+        headers: await _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> setActiveDataset(int datasetId, [String? token]) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/datasets/$datasetId/activate'),
+        headers: await _headers(token),
       );
       return _handleResponse(response);
     } catch (e) {
@@ -190,8 +230,11 @@ class ApiService {
       List<int> fileBytes, String fileName, [String? token]) async {
     try {
       var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/upload'));
-      if (token != null && token.isNotEmpty) {
-        request.headers['Authorization'] = 'Bearer $token';
+      final effectiveToken = (token != null && token.isNotEmpty)
+          ? token
+          : await AuthService.getToken();
+      if (effectiveToken != null && effectiveToken.isNotEmpty) {
+        request.headers['Authorization'] = 'Bearer $effectiveToken';
       }
       request.files.add(
           http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));

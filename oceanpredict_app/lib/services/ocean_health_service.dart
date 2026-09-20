@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 /// Result of an ocean health calculation.
 class OceanHealthResult {
   final int score; // 0-100
-  final String status; // Excellent / Good / Moderate / Critical / No Data
+  final String status; // Excellent / Good / Moderate / Critical / Limited Data / No Data
   final Color color;
-  final Map<String, double> factors; // 0-100 each
+  final Map<String, double?> factors; // 0-100 each, or null if N/A
 
   const OceanHealthResult({
     required this.score,
@@ -16,13 +16,6 @@ class OceanHealthResult {
 }
 
 /// Pure calculation service — no UI here.
-///
-/// NOTE: This is a documented heuristic derived from real aggregate values
-/// already returned by the existing /analytics/summary endpoint (avg/min/max
-/// temperature, salinity, and max pressure). It is NOT randomly generated.
-/// If a real backend "ocean health" endpoint is added later, this class is
-/// the single place to swap the calculation for a real API call — the UI
-/// layer never needs to change.
 class OceanHealthService {
   static OceanHealthResult calculate({
     double? avgTemp,
@@ -32,38 +25,56 @@ class OceanHealthService {
     double? minSalinity,
     double? maxSalinity,
     double? maxPressure,
+    int observationCount = 0,
   }) {
-    if (avgTemp == null || avgSalinity == null) {
+    if (avgTemp == null || avgSalinity == null || observationCount == 0) {
       return const OceanHealthResult(
         score: 0,
         status: 'No Data',
         color: Colors.grey,
-        factors: {},
+        factors: {
+          'Temperature Stability': null,
+          'Salinity Balance': null,
+          'Depth Variation': null,
+          'Data Quality': null,
+        },
       );
     }
 
-    final tempRange = (maxTemp != null && minTemp != null) ? (maxTemp - minTemp) : 0;
-    final tempStability = (100 - (tempRange * 2.5)).clamp(0, 100).toDouble();
+    final bool isSingleObservation = observationCount < 2;
+
+    final double? tempStability = isSingleObservation
+        ? null
+        : (() {
+            final tempRange = (maxTemp != null && minTemp != null) ? (maxTemp - minTemp) : 0;
+            return (100 - (tempRange * 2.5)).clamp(0, 100).toDouble();
+          })();
 
     final salinityBalance = (100 - ((avgSalinity - 35).abs() * 8)).clamp(0, 100).toDouble();
 
-    // More vertical (depth) coverage in the profile is treated as richer,
-    // healthier sampling — capped at 2000 dbar as a reasonable ocean-depth ceiling.
-    final depthVariation = maxPressure == null
-        ? 50.0
-        : ((maxPressure / 2000) * 100).clamp(0, 100).toDouble();
+    final double? depthVariation = isSingleObservation
+        ? null
+        : (maxPressure == null
+            ? 50.0
+            : ((maxPressure / 2000) * 100).clamp(0, 100).toDouble());
 
-    // The backend already filters out NaN/missing readings before storing
-    // data (see /upload), so stored records are treated as clean.
     const dataQuality = 100.0;
 
-    final score = ((tempStability + salinityBalance + depthVariation + dataQuality) / 4)
-        .round()
-        .clamp(0, 100);
+    final List<double> evaluable = [
+      if (tempStability != null) tempStability,
+      salinityBalance,
+      if (depthVariation != null) depthVariation,
+      dataQuality,
+    ];
+
+    final score = (evaluable.reduce((a, b) => a + b) / evaluable.length).round().clamp(0, 100);
 
     String status;
     Color color;
-    if (score >= 80) {
+    if (isSingleObservation) {
+      status = 'Limited Data';
+      color = Colors.blue.shade700;
+    } else if (score >= 80) {
       status = 'Excellent';
       color = const Color(0xFF2E7D32);
     } else if (score >= 60) {
@@ -104,6 +115,17 @@ class DataStats {
     final m = mean(values);
     final variance = values.map((v) => (v - m) * (v - m)).reduce((a, b) => a + b) / values.length;
     return variance <= 0 ? 0 : variance.abs().toDouble();
+  }
+
+  static double percentile(List<double> values, double p) {
+    if (values.isEmpty) return 0;
+    final sorted = List<double>.from(values)..sort();
+    if (sorted.length == 1) return sorted.first;
+    final index = p * (sorted.length - 1);
+    final lower = index.floor();
+    final upper = index.ceil();
+    final weight = index - lower;
+    return sorted[lower] * (1 - weight) + sorted[upper] * weight;
   }
 
   /// Returns slope sign via simple least-squares regression against index.
