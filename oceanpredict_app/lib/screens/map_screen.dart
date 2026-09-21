@@ -188,6 +188,8 @@ class _MapScreenState extends State<MapScreen> {
   void _showFloatSheet(MapFloatPoint point) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) => FloatInfoSheet(
         point: point,

@@ -267,31 +267,31 @@ class _TrackerScreenState extends State<TrackerScreen> {
       avgSalinity: avgSal,
       maxPressure: maxPres,
     );
-    final tempChart = _TrendMiniChart(
+    final cycleSummaries = FloatTrackerService.groupByCycle(_sortedPoints);
+
+    final tempChart = _CycleTrendChart(
       title: 'Temperature Trend',
       unit: '°C',
-      points: _sortedPoints,
-      valueOf: (p) => p.temperature,
+      cycleSummaries: cycleSummaries,
+      valueOf: (c) => c.avgTemperature,
       color: Colors.orange.shade700,
     );
-    final salChart = _TrendMiniChart(
+    final salChart = _CycleTrendChart(
       title: 'Salinity Trend',
       unit: 'PSU',
-      points: _sortedPoints,
-      valueOf: (p) => p.salinity,
+      cycleSummaries: cycleSummaries,
+      valueOf: (c) => c.avgSalinity,
       color: Colors.teal.shade700,
     );
-    final presChart = _TrendMiniChart(
-      title: 'Pressure / Depth Trend',
-      unit: 'dbar',
-      points: _sortedPoints,
-      valueOf: (p) => p.pressure,
+    final presChart = _CyclePressureChart(
+      cycleSummaries: cycleSummaries,
       color: Colors.blue.shade700,
     );
-    final history = _ReadingHistoryList(
-      points: _sortedPoints,
+    final history = _GroupedReadingHistoryList(
+      cycleSummaries: cycleSummaries,
+      allPoints: _sortedPoints,
       selectedIndex: _selectedIndex,
-      onSelect: _selectIndex,
+      onSelectObservation: _selectIndex,
     );
 
     final content = isWide
@@ -782,19 +782,19 @@ class _JourneyStatsGrid extends StatelessWidget {
 }
 
 // ============================================================
-// Trend mini chart
+// Cycle Trend Chart (Temperature / Salinity)
 // ============================================================
-class _TrendMiniChart extends StatelessWidget {
+class _CycleTrendChart extends StatelessWidget {
   final String title;
   final String unit;
-  final List<MapFloatPoint> points;
-  final double? Function(MapFloatPoint) valueOf;
+  final List<CycleSummary> cycleSummaries;
+  final double? Function(CycleSummary) valueOf;
   final Color color;
 
-  const _TrendMiniChart({
+  const _CycleTrendChart({
     required this.title,
     required this.unit,
-    required this.points,
+    required this.cycleSummaries,
     required this.valueOf,
     required this.color,
   });
@@ -802,8 +802,8 @@ class _TrendMiniChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final spots = <FlSpot>[];
-    for (int i = 0; i < points.length; i++) {
-      final v = valueOf(points[i]);
+    for (int i = 0; i < cycleSummaries.length; i++) {
+      final v = valueOf(cycleSummaries[i]);
       if (v != null) spots.add(FlSpot(i.toDouble(), v));
     }
 
@@ -816,25 +816,39 @@ class _TrendMiniChart extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
-          const SizedBox(height: 10),
+          const SizedBox(height: 4),
+          Text(
+            'Average $unit per cycle (${spots.length} cycles)',
+            style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 12),
           SizedBox(
-            height: 180,
+            height: 190,
             child: LineChart(
               LineChartData(
                 titlesData: FlTitlesData(
                   bottomTitles: AxisTitles(
                     sideTitles: SideTitles(
                       showTitles: true,
-                      reservedSize: 22,
+                      reservedSize: 24,
+                      interval: 1,
                       getTitlesWidget: (value, meta) {
                         final i = value.round();
-                        if (i < 0 || i >= points.length) return const SizedBox.shrink();
-                        final c = points[i].cycleNumber;
-                        return Text(c != null ? '#$c' : '', style: const TextStyle(fontSize: 9));
+                        if (i < 0 || i >= cycleSummaries.length) return const SizedBox.shrink();
+                        final c = cycleSummaries[i].cycleNumber;
+                        return Text('#$c', style: const TextStyle(fontSize: 9.5));
                       },
                     ),
                   ),
-                  leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 36)),
+                  leftTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 38,
+                      getTitlesWidget: (value, meta) {
+                        return Text(value.toStringAsFixed(1), style: const TextStyle(fontSize: 9.5));
+                      },
+                    ),
+                  ),
                   rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                 ),
@@ -842,11 +856,15 @@ class _TrendMiniChart extends StatelessWidget {
                 borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey.shade300)),
                 lineTouchData: LineTouchData(
                   touchTooltipData: LineTouchTooltipData(
-                    getTooltipItems: (spots) => spots.map((s) {
+                    getTooltipItems: (touchedSpots) => touchedSpots.map((s) {
                       final i = s.x.round();
-                      final c = (i >= 0 && i < points.length) ? points[i].cycleNumber : null;
+                      final cycle = (i >= 0 && i < cycleSummaries.length) ? cycleSummaries[i] : null;
+                      final cNum = cycle?.cycleNumber ?? i;
+                      final obsCount = cycle?.points.length ?? 0;
                       return LineTooltipItem(
-                        'Cycle ${c != null ? '#$c' : 'N/A'}\n${s.y.toStringAsFixed(2)} $unit',
+                        'Cycle #$cNum\n'
+                        'Average: ${s.y.toStringAsFixed(2)} $unit\n'
+                        'Observations: $obsCount',
                         const TextStyle(color: Colors.white, fontSize: 11),
                       );
                     }).toList(),
@@ -872,54 +890,277 @@ class _TrendMiniChart extends StatelessWidget {
 }
 
 // ============================================================
-// Reading history list
+// Cycle Pressure / Depth Chart
 // ============================================================
-class _ReadingHistoryList extends StatelessWidget {
-  final List<MapFloatPoint> points; // chronological ascending
-  final int selectedIndex;
-  final ValueChanged<int> onSelect;
+class _CyclePressureChart extends StatelessWidget {
+  final List<CycleSummary> cycleSummaries;
+  final Color color;
 
-  const _ReadingHistoryList({required this.points, required this.selectedIndex, required this.onSelect});
+  const _CyclePressureChart({
+    required this.cycleSummaries,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final reversedIndices = List<int>.generate(points.length, (i) => points.length - 1 - i);
+    if (cycleSummaries.isEmpty) {
+      return const _SoftCard(child: Text('No Pressure / Depth data available.'));
+    }
+
+    final spots = <FlSpot>[];
+    for (int i = 0; i < cycleSummaries.length; i++) {
+      final c = cycleSummaries[i];
+      if (c.maxPressure != null) {
+        spots.add(FlSpot(i.toDouble(), c.maxPressure!));
+      }
+    }
 
     return _SoftCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Reading History', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-          const SizedBox(height: 10),
-          ...reversedIndices.map((i) {
-            final p = points[i];
-            final isSelected = i == selectedIndex;
-            return InkWell(
-              onTap: () => onSelect(i),
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: isSelected ? Colors.cyan.shade50 : Colors.grey.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: isSelected ? Colors.cyan.shade300 : Colors.grey.shade200),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(p.cycleNumber != null ? 'Cycle #${p.cycleNumber}' : 'Cycle N/A',
-                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                    Text(
-                      '${p.temperature != null ? '${p.temperature}°C' : 'N/A'} • ${p.salinity != null ? '${p.salinity} PSU' : 'N/A'}',
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+          const Text('Pressure / Depth Trend', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+          const SizedBox(height: 4),
+          Text(
+            'Maximum profile depth (dbar) per cycle',
+            style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 190,
+            child: LineChart(
+              LineChartData(
+                titlesData: FlTitlesData(
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 24,
+                      interval: 1,
+                      getTitlesWidget: (value, meta) {
+                        final i = value.round();
+                        if (i < 0 || i >= cycleSummaries.length) return const SizedBox.shrink();
+                        final c = cycleSummaries[i].cycleNumber;
+                        return Text('#$c', style: const TextStyle(fontSize: 9.5));
+                      },
                     ),
-                    Text('Pressure: ${p.pressure != null ? '${p.pressure} dbar' : 'N/A'}',
-                        style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600)),
-                    Text('Date: ${p.timestamp ?? 'Not Available'}',
-                        style: TextStyle(fontSize: 11.5, color: Colors.grey.shade500)),
-                  ],
+                  ),
+                  leftTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 42,
+                      getTitlesWidget: (value, meta) {
+                        return Text('${value.toInt()} dbar', style: const TextStyle(fontSize: 9));
+                      },
+                    ),
+                  ),
+                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                 ),
+                gridData: const FlGridData(show: true),
+                borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey.shade300)),
+                lineTouchData: LineTouchData(
+                  touchTooltipData: LineTouchTooltipData(
+                    getTooltipItems: (touchedSpots) => touchedSpots.map((s) {
+                      final i = s.x.round();
+                      final cycle = (i >= 0 && i < cycleSummaries.length) ? cycleSummaries[i] : null;
+                      final cNum = cycle?.cycleNumber ?? i;
+                      return LineTooltipItem(
+                        'Cycle #$cNum\n'
+                        'Max Depth: ${cycle?.maxPressure?.toStringAsFixed(0) ?? 'N/A'} dbar\n'
+                        'Min Depth: ${cycle?.minPressure?.toStringAsFixed(0) ?? 'N/A'} dbar\n'
+                        'Observations: ${cycle?.points.length ?? 0}',
+                        const TextStyle(color: Colors.white, fontSize: 11),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                lineBarsData: [
+                  LineChartBarData(
+                    spots: spots,
+                    isCurved: false,
+                    color: color,
+                    barWidth: 2.5,
+                    dotData: const FlDotData(show: true),
+                    belowBarData: BarAreaData(show: true, color: color.withValues(alpha: 0.12)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Grouped Reading History List
+// ============================================================
+class _GroupedReadingHistoryList extends StatefulWidget {
+  final List<CycleSummary> cycleSummaries;
+  final List<MapFloatPoint> allPoints;
+  final int selectedIndex;
+  final ValueChanged<int> onSelectObservation;
+
+  const _GroupedReadingHistoryList({
+    required this.cycleSummaries,
+    required this.allPoints,
+    required this.selectedIndex,
+    required this.onSelectObservation,
+  });
+
+  @override
+  State<_GroupedReadingHistoryList> createState() => _GroupedReadingHistoryListState();
+}
+
+class _GroupedReadingHistoryListState extends State<_GroupedReadingHistoryList> {
+  late Set<int> _expandedCycles;
+
+  @override
+  void initState() {
+    super.initState();
+    _expandedCycles = widget.cycleSummaries.isNotEmpty
+        ? {widget.cycleSummaries.last.cycleNumber}
+        : {};
+  }
+
+  @override
+  void didUpdateWidget(covariant _GroupedReadingHistoryList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cycleSummaries != widget.cycleSummaries && widget.cycleSummaries.isNotEmpty) {
+      _expandedCycles = {widget.cycleSummaries.last.cycleNumber};
+    }
+  }
+
+  void _toggleCycle(int cycleNumber) {
+    setState(() {
+      if (_expandedCycles.contains(cycleNumber)) {
+        _expandedCycles.remove(cycleNumber);
+      } else {
+        _expandedCycles.add(cycleNumber);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final reversedSummaries = widget.cycleSummaries.reversed.toList();
+
+    return _SoftCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Reading History', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              Text(
+                '${widget.cycleSummaries.length} cycles (${widget.allPoints.length} total)',
+                style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ...reversedSummaries.map((cycle) {
+            final isExpanded = _expandedCycles.contains(cycle.cycleNumber);
+            final obsList = List<MapFloatPoint>.from(cycle.points)
+              ..sort((a, b) => (b.pressure ?? 0).compareTo(a.pressure ?? 0));
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              decoration: BoxDecoration(
+                color: isExpanded ? Colors.cyan.shade50.withValues(alpha: 0.4) : Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: isExpanded ? Colors.cyan.shade300 : Colors.grey.shade200),
+              ),
+              child: Column(
+                children: [
+                  InkWell(
+                    onTap: () => _toggleCycle(cycle.cycleNumber),
+                    borderRadius: BorderRadius.circular(14),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_right,
+                            color: Colors.cyan.shade800,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Cycle #${cycle.cycleNumber}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          const SizedBox(width: 10),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Colors.cyan.shade100,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              '${cycle.points.length} observations',
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.cyan.shade900),
+                            ),
+                          ),
+                          const Spacer(),
+                          if (cycle.avgTemperature != null)
+                            Text(
+                              'Avg ${cycle.avgTemperature!.toStringAsFixed(1)}°C',
+                              style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700, fontWeight: FontWeight.w500),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (isExpanded) ...[
+                    const Divider(height: 1, indent: 14, endIndent: 14),
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        children: obsList.map((p) {
+                          final globalIdx = widget.allPoints.indexOf(p);
+                          final isSelected = globalIdx == widget.selectedIndex;
+
+                          return InkWell(
+                            onTap: globalIdx != -1 ? () => widget.onSelectObservation(globalIdx) : null,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 4),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: isSelected ? Colors.cyan.shade100 : Colors.white,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: isSelected ? Colors.cyan.shade600 : Colors.grey.shade200,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.compress, size: 14, color: Colors.cyan.shade800),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        p.pressure != null ? '${p.pressure!.toStringAsFixed(0)} dbar' : 'N/A',
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                                      ),
+                                    ],
+                                  ),
+                                  Text(
+                                    '${p.temperature != null ? '${p.temperature!.toStringAsFixed(2)} °C' : 'N/A'}  /  ${p.salinity != null ? '${p.salinity!.toStringAsFixed(2)} PSU' : 'N/A'}',
+                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey.shade800),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             );
           }),

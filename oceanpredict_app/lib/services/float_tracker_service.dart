@@ -81,4 +81,49 @@ class FloatTrackerService {
   static int uniqueCycleCount(List<MapFloatPoint> points) {
     return points.map((p) => p.cycleNumber).whereType<int>().toSet().length;
   }
+
+  /// Groups sorted observations by cycle number and calculates cycle-level aggregates.
+  /// Returns a list of CycleSummary ordered ascending by cycle_number.
+  static List<CycleSummary> groupByCycle(List<MapFloatPoint> sortedPoints) {
+    final Map<int, List<MapFloatPoint>> grouped = {};
+    for (final p in sortedPoints) {
+      final c = p.cycleNumber ?? 0;
+      grouped.putIfAbsent(c, () => []).add(p);
+    }
+
+    final cycles = grouped.keys.toList()..sort();
+    return cycles.map((c) {
+      final list = grouped[c]!;
+      final temps = list.map((p) => p.temperature).toList();
+      final sals = list.map((p) => p.salinity).toList();
+      final press = list.map((p) => p.pressure).whereType<double>().toList();
+
+      return CycleSummary(
+        cycleNumber: c,
+        points: list,
+        avgTemperature: average(temps),
+        avgSalinity: average(sals),
+        minPressure: press.isNotEmpty ? press.reduce(min) : null,
+        maxPressure: press.isNotEmpty ? press.reduce(max) : null,
+      );
+    }).toList();
+  }
+}
+
+class CycleSummary {
+  final int cycleNumber;
+  final List<MapFloatPoint> points;
+  final double? avgTemperature;
+  final double? avgSalinity;
+  final double? minPressure;
+  final double? maxPressure;
+
+  CycleSummary({
+    required this.cycleNumber,
+    required this.points,
+    required this.avgTemperature,
+    required this.avgSalinity,
+    required this.minPressure,
+    required this.maxPressure,
+  });
 }

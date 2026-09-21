@@ -288,66 +288,125 @@ class FloatInfoSheet extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-            Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                value,
+                textAlign: TextAlign.end,
+                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+              ),
+            ),
           ],
         ),
       );
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    final screenHeight = MediaQuery.of(context).size.height;
+    final maxSheetHeight = screenHeight * 0.85;
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxSheetHeight),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(colors: [Colors.cyan.shade400, Colors.cyan.shade700]),
-                ),
-                child: const Icon(Icons.satellite_alt, color: Colors.white, size: 20),
+              Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(colors: [Colors.cyan.shade400, Colors.cyan.shade700]),
+                    ),
+                    child: const Icon(Icons.satellite_alt, color: Colors.white, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Float ${point.floatId}',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Text('Float ${point.floatId}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+              const Divider(height: 24),
+              _row('Latitude', '${point.latitude.toStringAsFixed(2)}°'),
+              _row('Longitude', '${point.longitude.toStringAsFixed(2)}°'),
+              _row('Temperature', point.temperature != null ? '${point.temperature!.toStringAsFixed(2)} °C' : 'N/A'),
+              _row('Salinity', point.salinity != null ? '${point.salinity!.toStringAsFixed(2)} PSU' : 'N/A'),
+              _row('Pressure', point.pressure != null ? '${point.pressure!.toStringAsFixed(0)} dbar' : 'N/A'),
+              _row('Cycle', point.cycleNumber != null ? '#${point.cycleNumber}' : 'N/A'),
+              _row('Timestamp', point.timestamp ?? 'Not available'),
+              const SizedBox(height: 20),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final isTight = constraints.maxWidth < 280;
+                  if (isTight) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        OutlinedButton(
+                          onPressed: onViewHistory,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text('View History', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                        const SizedBox(height: 10),
+                        ElevatedButton(
+                          onPressed: onTrackFloat,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.cyan.shade700,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text('Track Float', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: onViewHistory,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text('View History', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: onTrackFloat,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.cyan.shade700,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text('Track Float', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
             ],
           ),
-          const Divider(height: 24),
-          _row('Latitude', '${point.latitude.toStringAsFixed(2)}°'),
-          _row('Longitude', '${point.longitude.toStringAsFixed(2)}°'),
-          _row('Temperature', point.temperature != null ? '${point.temperature}°C' : 'N/A'),
-          _row('Salinity', point.salinity != null ? '${point.salinity} PSU' : 'N/A'),
-          _row('Pressure', point.pressure != null ? '${point.pressure} dbar' : 'N/A'),
-          _row('Cycle', point.cycleNumber != null ? '#${point.cycleNumber}' : 'N/A'),
-          _row('Timestamp', point.timestamp ?? 'Not available'),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(onPressed: onViewHistory, child: const Text('View History')),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton(onPressed: onTrackFloat, child: const Text('Track Float')),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: onViewAnalytics,
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan.shade700, foregroundColor: Colors.white),
-              child: const Text('View Analytics'),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

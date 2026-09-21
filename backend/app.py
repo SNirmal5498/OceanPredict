@@ -1010,12 +1010,27 @@ def predict():
         pred_val = float(final_model.predict(future_X)[0])
         forecast.append({'step': step, 'cycle': future_cycle, 'predicted_value': round(pred_val, 2)})
 
+    historical_series = []
+    if float_id and float_id != 'all':
+        cycle_groups = {}
+        for r in rows:
+            c = r.cycle_number
+            val = r.temperature if target == 'temperature' else r.salinity
+            if c is not None and val is not None:
+                cycle_groups.setdefault(c, []).append(float(val))
+        sorted_cycles = sorted(cycle_groups.keys())
+        for c in sorted_cycles:
+            vals = cycle_groups[c]
+            avg_val = round(sum(vals) / len(vals), 2)
+            historical_series.append({'cycle': c, 'value': avg_val})
+
     return jsonify({
         'model': model_type,
         'target': target,
         'float_id': float_id,
         'horizon': horizon,
         'latest_actual_value': round(float(y[-1]), 2),
+        'historical_series': historical_series,
         'forecast': forecast,
         'metrics': {
             'train_samples': train_size,

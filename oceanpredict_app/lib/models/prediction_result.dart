@@ -36,12 +36,25 @@ class PredictionMetrics {
       );
 }
 
+class HistoricalPoint {
+  final int cycle;
+  final double value;
+
+  HistoricalPoint({required this.cycle, required this.value});
+
+  factory HistoricalPoint.fromJson(Map<String, dynamic> json) => HistoricalPoint(
+        cycle: json['cycle'] as int,
+        value: (json['value'] as num).toDouble(),
+      );
+}
+
 class PredictionResult {
   final String model;
   final String target;
   final String floatId;
   final int horizon;
   final double latestActualValue;
+  final List<HistoricalPoint> historicalSeries;
   final List<ForecastPoint> forecast;
   final PredictionMetrics metrics;
   final Map<String, double>? featureImportance;
@@ -53,6 +66,7 @@ class PredictionResult {
     required this.floatId,
     required this.horizon,
     required this.latestActualValue,
+    required this.historicalSeries,
     required this.forecast,
     required this.metrics,
     required this.featureImportance,
@@ -65,6 +79,9 @@ class PredictionResult {
         floatId: '${json['float_id']}',
         horizon: json['horizon'] as int,
         latestActualValue: (json['latest_actual_value'] as num).toDouble(),
+        historicalSeries: (json['historical_series'] as List? ?? [])
+            .map((h) => HistoricalPoint.fromJson(h as Map<String, dynamic>))
+            .toList(),
         forecast: (json['forecast'] as List)
             .map((f) => ForecastPoint.fromJson(f as Map<String, dynamic>))
             .toList(),

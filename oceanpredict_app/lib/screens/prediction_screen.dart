@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../services/api_service.dart';
@@ -30,7 +31,6 @@ class _PredictionScreenState extends State<PredictionScreen> {
   _RunState _runState = _RunState.idle;
   String? _errorMessage;
   PredictionResult? _result;
-  List<Map<String, dynamic>> _historicalPoints = []; // for chart, single-float only
 
   final List<PredictionHistoryEntry> _history = [];
 
@@ -65,19 +65,6 @@ class _PredictionScreenState extends State<PredictionScreen> {
     });
   }
 
-  Future<void> _loadHistoricalForChart() async {
-    _historicalPoints = [];
-    if (_selectedFloat == 'all') return; // not scientifically coherent across floats — skip honestly
-
-    final result = await ApiService.getFloatHistory(_selectedFloat);
-    if (result['statusCode'] == 200) {
-      final history = result['body']['history'] as List<dynamic>;
-      final sorted = List<Map<String, dynamic>>.from(history)
-        ..sort((a, b) => ((a['cycle_number'] ?? 0) as num).compareTo((b['cycle_number'] ?? 0) as num));
-      _historicalPoints = sorted;
-    }
-  }
-
   Future<void> _runPrediction() async {
     if (_runState == _RunState.preparing || _runState == _RunState.training || _runState == _RunState.generating) {
       return; // no simultaneous requests
@@ -89,11 +76,8 @@ class _PredictionScreenState extends State<PredictionScreen> {
       _result = null;
     });
 
-    await _loadHistoricalForChart();
-    if (!mounted) return;
-
     setState(() => _runState = _RunState.training);
-    await Future.delayed(const Duration(milliseconds: 300)); // reflects real request in flight
+    await Future.delayed(const Duration(milliseconds: 200));
     if (!mounted) return;
 
     setState(() => _runState = _RunState.generating);
@@ -213,7 +197,6 @@ class _PredictionScreenState extends State<PredictionScreen> {
         : _result != null
             ? _ResultSection(
                 result: _result!,
-                historicalPoints: _historicalPoints,
                 detailsExpanded: _detailsExpanded,
                 onToggleDetails: () => setState(() => _detailsExpanded = !_detailsExpanded),
               )
@@ -547,13 +530,11 @@ class _ErrorCard extends StatelessWidget {
 // ============================================================
 class _ResultSection extends StatelessWidget {
   final PredictionResult result;
-  final List<Map<String, dynamic>> historicalPoints;
   final bool detailsExpanded;
   final VoidCallback onToggleDetails;
 
   const _ResultSection({
     required this.result,
-    required this.historicalPoints,
     required this.detailsExpanded,
     required this.onToggleDetails,
   });
@@ -593,20 +574,14 @@ class _ResultSection extends StatelessWidget {
                   ],
                 ),
               ),
-              if (result.floatId == 'all') ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Chart omitted: "All Floats" mixes multiple floats and cannot be shown as one coherent historical series.',
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade500, fontStyle: FontStyle.italic),
-                ),
-              ],
             ],
           ),
         ),
-        if (result.floatId != 'all' && historicalPoints.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          _ForecastChart(result: result, historicalPoints: historicalPoints, unit: unit),
-        ],
+        const SizedBox(height: 16),
+        if (result.floatId == 'all')
+          const _AllFloatsChartNotice()
+        else if (result.historicalSeries.isNotEmpty)
+          _ForecastChart(result: result, unit: unit),
         const SizedBox(height: 16),
         _SoftCard(
           child: Column(
@@ -633,7 +608,7 @@ class _ResultSection extends StatelessWidget {
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text('Cycle #${f.cycle}', style: const TextStyle(fontSize: 12.5)),
-                                  Text('${f.predictedValue}$unit',
+                                  Text('Predicted: ${f.predictedValue}$unit',
                                       style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
                                 ],
                               ),
@@ -663,81 +638,148 @@ class _ResultSection extends StatelessWidget {
 }
 
 // ============================================================
-// Forecast chart (historical solid, forecast dashed-style)
+// All Floats Chart Notice
 // ============================================================
-class _ForecastChart extends StatelessWidget {
-  final PredictionResult result;
-  final List<Map<String, dynamic>> historicalPoints;
-  final String unit;
-
-  const _ForecastChart({required this.result, required this.historicalPoints, required this.unit});
+class _AllFloatsChartNotice extends StatelessWidget {
+  const _AllFloatsChartNotice();
 
   @override
   Widget build(BuildContext context) {
-    final field = result.target;
+    return _SoftCard(
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, color: Colors.cyan.shade700, size: 22),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Text(
+              'Select a specific float to view the historical and forecast timeline.',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Forecast chart (Historical solid, Forecast dashed-style)
+// ============================================================
+class _ForecastChart extends StatelessWidget {
+  final PredictionResult result;
+  final String unit;
+
+  const _ForecastChart({required this.result, required this.unit});
+
+  @override
+  Widget build(BuildContext context) {
+    final targetName = result.target == 'temperature' ? 'Temperature' : 'Salinity';
+    final title = '$targetName Forecast — ${result.floatId}';
+
     final histSpots = <FlSpot>[];
-    for (int i = 0; i < historicalPoints.length; i++) {
-      final v = historicalPoints[i][field];
-      if (v != null) histSpots.add(FlSpot(i.toDouble(), (v as num).toDouble()));
+    for (final h in result.historicalSeries) {
+      histSpots.add(FlSpot(h.cycle.toDouble(), h.value));
     }
     if (histSpots.isEmpty) return const SizedBox.shrink();
 
-    final lastX = histSpots.last.x;
     final forecastSpots = <FlSpot>[histSpots.last];
-    for (int i = 0; i < result.forecast.length; i++) {
-      forecastSpots.add(FlSpot(lastX + i + 1, result.forecast[i].predictedValue));
+    for (final f in result.forecast) {
+      forecastSpots.add(FlSpot(f.cycle.toDouble(), f.predictedValue));
     }
+
+    final totalPoints = result.historicalSeries.length + result.forecast.length;
+    final chartWidth = max(MediaQuery.of(context).size.width - 64, totalPoints * 45.0);
 
     return _SoftCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Forecast Chart', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-          const SizedBox(height: 4),
+          Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          const SizedBox(height: 6),
           Row(
             children: [
-              _legendDot(Colors.cyan.shade700, 'Historical'),
-              const SizedBox(width: 14),
+              _legendDot(Colors.cyan.shade700, 'Actual'),
+              const SizedBox(width: 16),
               _legendDot(Colors.orange.shade600, 'Forecast'),
             ],
           ),
-          const SizedBox(height: 10),
-          SizedBox(
-            height: 220,
-            child: LineChart(
-              LineChartData(
-                titlesData: FlTitlesData(
-                  bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 22)),
-                  leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 40)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          const SizedBox(height: 12),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: chartWidth,
+              height: 230,
+              child: LineChart(
+                LineChartData(
+                  titlesData: FlTitlesData(
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 24,
+                        getTitlesWidget: (val, meta) {
+                          return Text('#${val.toInt()}', style: const TextStyle(fontSize: 9.5));
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 44,
+                        getTitlesWidget: (val, meta) {
+                          return Text('${val.toStringAsFixed(1)}$unit', style: const TextStyle(fontSize: 9.5));
+                        },
+                      ),
+                    ),
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  ),
+                  gridData: const FlGridData(show: true),
+                  borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey.shade300)),
+                  lineTouchData: LineTouchData(
+                    touchTooltipData: LineTouchTooltipData(
+                      getTooltipItems: (touchedSpots) => touchedSpots.map((s) {
+                        final cycleNum = s.x.round();
+                        final isForecast = s.barIndex == 1 && s.spotIndex > 0;
+                        final statusLabel = isForecast ? 'Forecast' : 'Actual';
+                        final valLabel = isForecast
+                            ? 'Predicted $targetName: ${s.y.toStringAsFixed(2)}$unit'
+                            : 'Actual $targetName: ${s.y.toStringAsFixed(2)}$unit';
+
+                        return LineTooltipItem(
+                          'Cycle #$cycleNum\n$valLabel\nStatus: $statusLabel',
+                          const TextStyle(color: Colors.white, fontSize: 11),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: histSpots,
+                      isCurved: true,
+                      color: Colors.cyan.shade700,
+                      barWidth: 3.0,
+                      dotData: const FlDotData(show: true),
+                      belowBarData: BarAreaData(show: true, color: Colors.cyan.shade700.withValues(alpha: 0.08)),
+                    ),
+                    LineChartBarData(
+                      spots: forecastSpots,
+                      isCurved: true,
+                      color: Colors.orange.shade600,
+                      barWidth: 3.0,
+                      dashArray: [6, 4],
+                      dotData: FlDotData(
+                        show: true,
+                        getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
+                          radius: 4,
+                          color: Colors.white,
+                          strokeWidth: 2.5,
+                          strokeColor: Colors.orange.shade600,
+                        ),
+                      ),
+                      belowBarData: BarAreaData(show: true, color: Colors.orange.shade600.withValues(alpha: 0.08)),
+                    ),
+                  ],
                 ),
-                gridData: const FlGridData(show: true),
-                borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey.shade300)),
-                lineTouchData: LineTouchData(
-                  touchTooltipData: LineTouchTooltipData(
-                    getTooltipItems: (spots) => spots
-                        .map((s) => LineTooltipItem('${s.y.toStringAsFixed(2)}$unit', const TextStyle(color: Colors.white, fontSize: 11)))
-                        .toList(),
-                  ),
-                ),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: histSpots,
-                    isCurved: true,
-                    color: Colors.cyan.shade700,
-                    barWidth: 2.5,
-                    dotData: const FlDotData(show: false),
-                  ),
-                  LineChartBarData(
-                    spots: forecastSpots,
-                    isCurved: true,
-                    color: Colors.orange.shade600,
-                    barWidth: 2.5,
-                    dashArray: [6, 4],
-                    dotData: const FlDotData(show: true),
-                  ),
-                ],
               ),
             ),
           ),
@@ -749,9 +791,13 @@ class _ForecastChart extends StatelessWidget {
   Widget _legendDot(Color c, String label) => Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(width: 10, height: 3, color: c),
-          const SizedBox(width: 4),
-          Text(label, style: const TextStyle(fontSize: 11)),
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: c),
+          ),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
         ],
       );
 }
@@ -778,7 +824,7 @@ class _ModelPerformanceCard extends StatelessWidget {
           _row('RMSE', m.rmse != null ? '${m.rmse}' : 'Not available'),
           _row('R² Score', m.r2 != null ? '${m.r2}' : 'Not available'),
           if (result.featureImportance != null) ...[
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             const Text('Feature Importance', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             const SizedBox(height: 6),
             ...result.featureImportance!.entries.map((e) => Padding(
@@ -803,10 +849,23 @@ class _ModelPerformanceCard extends StatelessWidget {
                   ),
                 )),
           ],
-          const SizedBox(height: 10),
-          Text(
-            'Future pressure/latitude/longitude are unknown, so the forecast holds them at the last observed real values.',
-            style: TextStyle(fontSize: 10.5, color: Colors.grey.shade500, fontStyle: FontStyle.italic),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(10)),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 16, color: Colors.grey.shade700),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Forecast assumption: Future pressure, latitude, and longitude are held at their latest observed values because future measurements are unavailable.',
+                    style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -845,6 +904,10 @@ class _PredictionHistorySection extends StatelessWidget {
           else
             ...history.map((h) {
               final r = h.result;
+              final modelName = r.model == 'linear_regression' ? 'Linear Regression' : 'Random Forest';
+              final targetName = r.target == 'temperature' ? 'Temperature' : 'Salinity';
+              final floatName = r.floatId == 'all' ? 'All Floats' : r.floatId;
+
               return Container(
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.all(10),
@@ -852,9 +915,8 @@ class _PredictionHistorySection extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(r.model == 'linear_regression' ? 'Linear Regression' : 'Random Forest',
-                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                    Text('${r.target == 'temperature' ? 'Temperature' : 'Salinity'} • ${r.floatId == 'all' ? 'All Floats' : r.floatId} • ${r.horizon} cycles',
+                    Text(modelName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    Text('$targetName • $floatName • ${r.horizon} cycles',
                         style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700)),
                     Text('Generated: ${h.generatedAt.day}/${h.generatedAt.month}/${h.generatedAt.year} ${h.generatedAt.hour.toString().padLeft(2, '0')}:${h.generatedAt.minute.toString().padLeft(2, '0')}',
                         style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
