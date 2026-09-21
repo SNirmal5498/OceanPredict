@@ -190,6 +190,18 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>> getReportData([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/reports/data'),
+        headers: await _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
   static Future<Map<String, dynamic>> getDatasets([String? token]) async {
     try {
       final response = await http.get(

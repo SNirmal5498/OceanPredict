@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import '../services/report_service.dart';
 
@@ -43,7 +44,12 @@ enum _GenState { idle, generating }
 class _ReportsScreenState extends State<ReportsScreen> {
   _DatasetState _datasetState = _DatasetState.loading;
   Map<String, dynamic>? _stats;
+  List<Map<String, dynamic>> _records = [];
   List<String> _floatIds = [];
+  bool _timestampAvailable = false;
+  String? _minTimestampStr;
+  String? _maxTimestampStr;
+  DateTime? _maxTimestamp;
 
   String _reportType = 'Complete Ocean Report';
   String _dateRange = 'All Data';
@@ -79,23 +85,103 @@ class _ReportsScreenState extends State<ReportsScreen> {
     setState(() => _datasetState = _DatasetState.loading);
 
     final statsResult = await ApiService.getDashboardStats();
-    final idsResult = await ApiService.getFloatIds();
+    final reportDataResult = await ApiService.getReportData();
+
     if (!mounted) return;
 
-    if (statsResult['statusCode'] != 200 || idsResult['statusCode'] != 200) {
+    if (statsResult['statusCode'] != 200 || reportDataResult['statusCode'] != 200) {
       setState(() => _datasetState = _DatasetState.error);
       return;
     }
 
+    final statsBody = statsResult['body'] as Map<String, dynamic>;
+    final reportBody = reportDataResult['body'] as Map<String, dynamic>;
+
+    final rawRecords = (reportBody['records'] as List? ?? [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+
+    final tsAvail = reportBody['timestamp_available'] == true;
+    final minTsStr = reportBody['min_timestamp'] as String?;
+    final maxTsStr = reportBody['max_timestamp'] as String?;
+    DateTime? parsedMaxTs;
+    if (maxTsStr != null) {
+      try {
+        parsedMaxTs = DateTime.parse(maxTsStr);
+      } catch (_) {}
+    }
+
+    final rawFloatIds = (reportBody['float_ids'] as List? ?? statsBody['float_ids'] as List? ?? []);
+    final floatIdsList = rawFloatIds.map((e) => '$e').toList();
+
     setState(() {
-      _stats = statsResult['body'];
-      _floatIds = List<String>.from(idsResult['body']['float_ids']);
+      _stats = statsBody;
+      _records = rawRecords;
+      _floatIds = floatIdsList;
+      _timestampAvailable = tsAvail;
+      _minTimestampStr = minTsStr;
+      _maxTimestampStr = maxTsStr;
+      _maxTimestamp = parsedMaxTs;
       _datasetState = _DatasetState.ready;
     });
   }
 
+  List<Map<String, dynamic>> _getFilteredRecords() {
+    List<Map<String, dynamic>> list = _records;
+
+    if (_selectedFloat != 'all') {
+      list = list.where((r) => '${r['float_id']}' == _selectedFloat).toList();
+    }
+
+    if (_timestampAvailable && _maxTimestamp != null && _dateRange != 'All Data') {
+      DateTime cutoff;
+      if (_dateRange == 'Last 7 Days') {
+        cutoff = _maxTimestamp!.subtract(const Duration(days: 7));
+      } else if (_dateRange == 'Last 30 Days') {
+        cutoff = _maxTimestamp!.subtract(const Duration(days: 30));
+      } else if (_dateRange == 'Last 6 Months') {
+        cutoff = _maxTimestamp!.subtract(const Duration(days: 180));
+      } else {
+        cutoff = DateTime.fromMillisecondsSinceEpoch(0);
+      }
+
+      list = list.where((r) {
+        final tsStr = r['timestamp'] as String?;
+        if (tsStr == null) return false;
+        try {
+          final dt = DateTime.parse(tsStr);
+          return dt.isAfter(cutoff) || dt.isAtSameMomentAs(cutoff);
+        } catch (_) {
+          return false;
+        }
+      }).toList();
+    }
+
+    return list;
+  }
+
   Future<void> _generate(String format) async {
     if (_genState == _GenState.generating) return;
+
+    final filtered = _getFilteredRecords();
+    if (filtered.isEmpty) {
+      setState(() {
+        _lastError = 'No records matching the selected float and date range filters.';
+      });
+      return;
+    }
+
+    final selectedSections = _sections.entries
+        .where((e) => e.value)
+        .map((e) => e.key)
+        .toList();
+
+    if (selectedSections.isEmpty) {
+      setState(() {
+        _lastError = 'Please select at least one report section to include.';
+      });
+      return;
+    }
 
     setState(() {
       _genState = _GenState.generating;
@@ -106,25 +192,25 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Generating $format...'),
+        content: Text('Generating $format report...'),
         duration: const Duration(seconds: 1),
       ),
     );
 
     try {
-      GeneratedReportInfo info;
-
-      final totalRecs = _stats?['total_records'] ?? 0;
-      final activeFloats = _stats?['active_floats'] ?? 0;
+      final datasetName = _stats?['dataset_name'] ?? 'Combined Dataset';
       final floatLabel = _selectedFloat == 'all' ? 'All Floats' : _selectedFloat;
+      final dateLabel = _timestampAvailable ? _dateRange : 'All Data (Timestamp N/A)';
 
       switch (format) {
         case 'CSV':
-          info = GeneratedReportInfo(
-            fileName: '${_reportType.replaceAll(' ', '_')}.csv',
-            format: 'CSV',
-            generatedAt: DateTime.now(),
-            recordCount: totalRecs,
+          await ReportService.generateAndDownloadCsv(
+            reportTitle: _reportType,
+            floatSelection: floatLabel,
+            dateRange: dateLabel,
+            datasetName: datasetName,
+            selectedSections: selectedSections,
+            filteredRecords: filtered,
           );
           break;
 
@@ -132,29 +218,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
           await ReportService.generateAndDownloadPdf(
             reportTitle: _reportType,
             floatSelection: floatLabel,
-            dateRange: _dateRange,
-            totalRecords: totalRecs,
-            datasetSummary: {
-              'Total Records': totalRecs,
-              'Active Floats': activeFloats,
-              'Data Completeness': '99.4%',
-            },
-            temperatureAnalysis: {
-              'Mean Temperature': '14.2 °C',
-              'Min Temperature': '2.1 °C',
-              'Max Temperature': '28.6 °C',
-            },
-            salinityAnalysis: {
-              'Mean Salinity': '35.1 PSU',
-              'Min Salinity': '33.2 PSU',
-              'Max Salinity': '37.0 PSU',
-            },
-          );
-          info = GeneratedReportInfo(
-            fileName: '${_reportType.replaceAll(' ', '_')}.pdf',
-            format: 'PDF',
-            generatedAt: DateTime.now(),
-            recordCount: totalRecs,
+            dateRange: dateLabel,
+            datasetName: datasetName,
+            selectedSections: selectedSections,
+            filteredRecords: filtered,
           );
           break;
 
@@ -163,28 +230,25 @@ class _ReportsScreenState extends State<ReportsScreen> {
           await ReportService.generateAndDownloadExcel(
             reportTitle: _reportType,
             floatSelection: floatLabel,
-            dateRange: _dateRange,
-            totalRecords: totalRecs,
-            rawDatasetRows: [],
-            temperatureAnalysis: {
-              'Mean Temperature': 14.2,
-              'Min Temperature': 2.1,
-              'Max Temperature': 28.6,
-            },
-            salinityAnalysis: {
-              'Mean Salinity': 35.1,
-              'Min Salinity': 33.2,
-              'Max Salinity': 37.0,
-            },
-          );
-          info = GeneratedReportInfo(
-            fileName: '${_reportType.replaceAll(' ', '_')}.xlsx',
-            format: 'Excel',
-            generatedAt: DateTime.now(),
-            recordCount: totalRecs,
+            dateRange: dateLabel,
+            datasetName: datasetName,
+            selectedSections: selectedSections,
+            filteredRecords: filtered,
           );
           break;
       }
+
+      final sanitizedDate = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final sanitizedTitle = _reportType.replaceAll(' ', '_');
+      final ext = format == 'Excel' ? 'xlsx' : format.toLowerCase();
+      final fileName = 'OceanPredict_${sanitizedTitle}_$sanitizedDate.$ext';
+
+      final info = GeneratedReportInfo(
+        fileName: fileName,
+        format: format,
+        generatedAt: DateTime.now(),
+        recordCount: filtered.length,
+      );
 
       if (!mounted) return;
       setState(() {
@@ -196,16 +260,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('$format report generated successfully.')),
       );
-    } on ReportGenerationException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _lastError = e.message;
-        _genState = _GenState.idle;
-      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _lastError = 'Unable to generate $format report.';
+        _lastError = 'Unable to generate $format report: ${e.toString().replaceAll('Exception: ', '')}';
         _genState = _GenState.idle;
       });
     }
@@ -326,14 +384,23 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final width = MediaQuery.of(context).size.width;
     final isWide = width >= 900;
     final includedSections = _sections.entries.where((e) => e.value).map((e) => e.key).toList();
+    final filteredRecords = _getFilteredRecords();
 
     final header = _Header();
-    final datasetSummary = _DatasetSummaryCard(stats: _stats!);
+    final datasetSummary = _DatasetSummaryCard(
+      stats: _stats!,
+      timestampAvailable: _timestampAvailable,
+      minTimestamp: _minTimestampStr,
+      maxTimestamp: _maxTimestampStr,
+    );
     final config = _ReportConfigCard(
       reportType: _reportType,
       dateRange: _dateRange,
       selectedFloat: _selectedFloat,
       floatIds: _floatIds,
+      timestampAvailable: _timestampAvailable,
+      minTimestamp: _minTimestampStr,
+      maxTimestamp: _maxTimestampStr,
       onTypeChanged: (v) => setState(() => _reportType = v),
       onDateRangeChanged: (v) => setState(() => _dateRange = v),
       onFloatChanged: (v) => setState(() => _selectedFloat = v),
@@ -346,7 +413,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
       reportType: _reportType,
       selectedFloat: _selectedFloat,
       dateRange: _dateRange,
-      totalRecords: _stats!['total_records'],
+      totalRecords: _stats!['total_records'] ?? _records.length,
+      filteredCount: filteredRecords.length,
       sections: includedSections,
     );
     final generateSection = _GenerateSection(
@@ -456,20 +524,39 @@ class _Header extends StatelessWidget {
 
 class _DatasetSummaryCard extends StatelessWidget {
   final Map<String, dynamic> stats;
-  const _DatasetSummaryCard({required this.stats});
+  final bool timestampAvailable;
+  final String? minTimestamp;
+  final String? maxTimestamp;
+
+  const _DatasetSummaryCard({
+    required this.stats,
+    required this.timestampAvailable,
+    this.minTimestamp,
+    this.maxTimestamp,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final dateRangeText = timestampAvailable && minTimestamp != null && maxTimestamp != null
+        ? '${minTimestamp!.split(' ').first} to ${maxTimestamp!.split(' ').first}'
+        : 'Date filtering unavailable';
+
     return _SoftCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text('Dataset Summary', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
           const Divider(height: 20),
-          _row('Dataset Name', 'Combined Dataset (all uploads)'),
+          _row('Dataset Name', stats['dataset_name'] ?? 'Combined Dataset (all uploads)'),
           _row('Total Records', '${stats['total_records']}'),
           _row('Total Floats', '${stats['active_floats']}'),
-          _row('Date Range', 'Date filtering unavailable'),
+          _row('Date Range', dateRangeText),
+          if (!timestampAvailable)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text('Active dataset contains no timestamp entries.',
+                  style: TextStyle(fontSize: 10.5, color: Colors.grey.shade500, fontStyle: FontStyle.italic)),
+            ),
         ],
       ),
     );
@@ -494,6 +581,9 @@ class _ReportConfigCard extends StatelessWidget {
   final String dateRange;
   final String selectedFloat;
   final List<String> floatIds;
+  final bool timestampAvailable;
+  final String? minTimestamp;
+  final String? maxTimestamp;
   final ValueChanged<String> onTypeChanged;
   final ValueChanged<String> onDateRangeChanged;
   final ValueChanged<String> onFloatChanged;
@@ -503,6 +593,9 @@ class _ReportConfigCard extends StatelessWidget {
     required this.dateRange,
     required this.selectedFloat,
     required this.floatIds,
+    required this.timestampAvailable,
+    this.minTimestamp,
+    this.maxTimestamp,
     required this.onTypeChanged,
     required this.onDateRangeChanged,
     required this.onFloatChanged,
@@ -519,6 +612,9 @@ class _ReportConfigCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final minDate = minTimestamp != null ? minTimestamp!.split(' ').first : '';
+    final maxDate = maxTimestamp != null ? maxTimestamp!.split(' ').first : '';
+
     return _SoftCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -533,23 +629,33 @@ class _ReportConfigCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Opacity(
-            opacity: 0.6,
+            opacity: timestampAvailable ? 1.0 : 0.6,
             child: DropdownButtonFormField<String>(
               initialValue: dateRange,
               decoration: const InputDecoration(labelText: 'Date Range', border: OutlineInputBorder(), isDense: true),
-              items: const [
-                DropdownMenuItem(value: 'All Data', child: Text('All Data')),
-                DropdownMenuItem(value: 'Last 7 Days', child: Text('Last 7 Days (unavailable)')),
-                DropdownMenuItem(value: 'Last 30 Days', child: Text('Last 30 Days (unavailable)')),
-                DropdownMenuItem(value: 'Last 6 Months', child: Text('Last 6 Months (unavailable)')),
+              items: [
+                const DropdownMenuItem(value: 'All Data', child: Text('All Data')),
+                DropdownMenuItem(
+                    value: 'Last 7 Days',
+                    child: Text(timestampAvailable ? 'Last 7 Days' : 'Last 7 Days (unavailable)')),
+                DropdownMenuItem(
+                    value: 'Last 30 Days',
+                    child: Text(timestampAvailable ? 'Last 30 Days' : 'Last 30 Days (unavailable)')),
+                DropdownMenuItem(
+                    value: 'Last 6 Months',
+                    child: Text(timestampAvailable ? 'Last 6 Months' : 'Last 6 Months (unavailable)')),
               ],
-              onChanged: (v) => v != null && v == 'All Data' ? onDateRangeChanged(v) : null,
+              onChanged: timestampAvailable ? (v) => v != null ? onDateRangeChanged(v) : null : null,
             ),
           ),
           Padding(
             padding: const EdgeInsets.only(top: 4),
-            child: Text('Date filtering unavailable — dataset has no timestamp field yet.',
-                style: TextStyle(fontSize: 10.5, color: Colors.grey.shade500, fontStyle: FontStyle.italic)),
+            child: Text(
+              timestampAvailable
+                  ? 'Filtering by dataset timestamps ($minDate to $maxDate)'
+                  : 'Date filtering unavailable — dataset has no timestamp field yet.',
+              style: TextStyle(fontSize: 10.5, color: Colors.grey.shade500, fontStyle: FontStyle.italic),
+            ),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
@@ -601,6 +707,7 @@ class _ReportPreviewCard extends StatelessWidget {
   final String selectedFloat;
   final String dateRange;
   final int totalRecords;
+  final int filteredCount;
   final List<String> sections;
 
   const _ReportPreviewCard({
@@ -608,6 +715,7 @@ class _ReportPreviewCard extends StatelessWidget {
     required this.selectedFloat,
     required this.dateRange,
     required this.totalRecords,
+    required this.filteredCount,
     required this.sections,
   });
 
@@ -622,12 +730,7 @@ class _ReportPreviewCard extends StatelessWidget {
           _row('Report', reportType),
           _row('Float', selectedFloat == 'all' ? 'All Floats' : selectedFloat),
           _row('Date Range', dateRange),
-          _row(
-            'Records',
-            selectedFloat == 'all'
-                ? '$totalRecords'
-                : '$totalRecords (dataset total — per-float scoping needs backend support)',
-          ),
+          _row('Records', '$filteredCount of $totalRecords dataset records'),
           const SizedBox(height: 6),
           Text('Sections', style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5)),
           const SizedBox(height: 4),

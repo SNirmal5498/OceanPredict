@@ -96,14 +96,50 @@ class PredictionResult {
 
   double get expectedChange => forecast.isEmpty ? 0 : (forecast.last.predictedValue - latestActualValue);
 
-  /// Real interpretation computed from the actual forecast values — never hardcoded.
+  /// Real interpretation computed from the actual expected change and forecast sequence trend — never hardcoded.
   String get trendInterpretation {
-    if (forecast.length < 2) return 'Not enough forecast points to determine a trend.';
-    final delta = forecast.last.predictedValue - forecast.first.predictedValue;
     final label = target == 'temperature' ? 'Temperature' : 'Salinity';
-    if (delta.abs() < 0.05) return '$label is predicted to remain relatively stable.';
-    if (delta > 0) return '$label is predicted to increase over the selected forecast period.';
-    return '$label is predicted to decrease over the selected forecast period.';
+    final unit = target == 'temperature' ? '°C' : ' PSU';
+    final overallDelta = expectedChange;
+    final absOverallDelta = overallDelta.abs();
+
+    String mainMessage;
+    bool isOverallIncrease = false;
+    bool isOverallDecrease = false;
+
+    if (absOverallDelta < 0.05) {
+      mainMessage = '$label is predicted to remain relatively stable';
+    } else if (overallDelta > 0) {
+      isOverallIncrease = true;
+      mainMessage = '$label is predicted to increase by ${absOverallDelta.toStringAsFixed(2)}$unit overall';
+    } else {
+      isOverallDecrease = true;
+      mainMessage = '$label is predicted to decrease by ${absOverallDelta.toStringAsFixed(2)}$unit overall';
+    }
+
+    String suffix = '';
+    if (forecast.length >= 2) {
+      final firstForecast = forecast.first.predictedValue;
+      final finalForecast = forecast.last.predictedValue;
+      final intraDelta = finalForecast - firstForecast;
+
+      if (isOverallIncrease && intraDelta <= -0.05) {
+        suffix = ', with a gradual decline across the forecast cycles.';
+      } else if (isOverallDecrease && intraDelta >= 0.05) {
+        suffix = ', with a gradual increase across the forecast cycles.';
+      } else if (!isOverallIncrease && !isOverallDecrease) {
+        if (intraDelta <= -0.05) {
+          suffix = ', with a gradual decline across the forecast cycles.';
+        } else if (intraDelta >= 0.05) {
+          suffix = ', with a gradual increase across the forecast cycles.';
+        }
+      }
+    }
+
+    if (suffix.isEmpty) {
+      return '$mainMessage.';
+    }
+    return '$mainMessage$suffix';
   }
 }
 

@@ -87,20 +87,19 @@ class SystemLog(db.Model):
 import json
 
 def get_active_dataset(user_id=None):
-    if user_id is not None:
-        ds = Dataset.query.filter_by(user_id=user_id, is_active=True).order_by(Dataset.id.desc()).first()
-        if not ds:
-            ds = Dataset.query.filter_by(user_id=user_id).order_by(Dataset.id.desc()).first()
-            if ds:
-                ds.is_active = True
-                db.session.commit()
-        return ds
     ds = Dataset.query.filter_by(is_active=True).order_by(Dataset.id.desc()).first()
-    if not ds:
-        ds = Dataset.query.order_by(Dataset.id.desc()).first()
+    if ds:
+        return ds
+    if user_id is not None:
+        ds = Dataset.query.filter_by(user_id=user_id).order_by(Dataset.id.desc()).first()
         if ds:
             ds.is_active = True
             db.session.commit()
+            return ds
+    ds = Dataset.query.order_by(Dataset.id.desc()).first()
+    if ds:
+        ds.is_active = True
+        db.session.commit()
     return ds
 
 def admin_required():
@@ -533,10 +532,71 @@ def float_ids():
     return jsonify({'float_ids': [i[0] for i in ids]}), 200
 
 
+@app.route('/api/reports/data', methods=['GET'])
+@jwt_required()
+def reports_data():
+    user_id = int(get_jwt_identity())
+    active_ds = get_active_dataset(user_id=user_id)
+    if not active_ds:
+        return jsonify({
+            'active': False,
+            'message': 'No active dataset available',
+            'records': [],
+            'timestamp_available': False,
+            'min_timestamp': None,
+            'max_timestamp': None,
+            'active_floats': 0,
+            'total_records': 0,
+            'float_ids': [],
+        }), 200
+
+    query = FloatData.query.filter_by(dataset_id=active_ds.id).order_by(FloatData.id)
+    readings = query.all()
+
+    float_ids_list = [i[0] for i in db.session.query(FloatData.float_id).filter_by(dataset_id=active_ds.id).distinct().all()]
+
+    ts_list = [r.timestamp for r in readings if r.timestamp is not None]
+    timestamp_available = len(ts_list) > 0
+    min_ts_str = min(ts_list).strftime('%Y-%m-%d %H:%M:%S') if timestamp_available else None
+    max_ts_str = max(ts_list).strftime('%Y-%m-%d %H:%M:%S') if timestamp_available else None
+
+    records = []
+    for r in readings:
+        records.append({
+            'id': r.id,
+            'float_id': r.float_id,
+            'latitude': round(r.latitude, 4) if r.latitude is not None else None,
+            'longitude': round(r.longitude, 4) if r.longitude is not None else None,
+            'temperature': round(r.temperature, 2) if r.temperature is not None else None,
+            'salinity': round(r.salinity, 2) if r.salinity is not None else None,
+            'pressure': round(r.pressure, 2) if r.pressure is not None else None,
+            'cycle_number': r.cycle_number,
+            'timestamp': r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else None,
+        })
+
+    meta = json.loads(active_ds.metadata_json) if active_ds.metadata_json else {}
+
+    return jsonify({
+        'active': True,
+        'dataset_id': active_ds.id,
+        'dataset_name': active_ds.filename,
+        'upload_date': active_ds.upload_date.strftime('%Y-%m-%d %H:%M:%S') if active_ds.upload_date else '',
+        'total_records': len(readings),
+        'active_floats': len(float_ids_list),
+        'float_ids': float_ids_list,
+        'timestamp_available': timestamp_available,
+        'min_timestamp': min_ts_str,
+        'max_timestamp': max_ts_str,
+        'records': records,
+        'metadata': meta,
+    }), 200
+
+
 @app.route('/seed-sample-data', methods=['POST'])
 @jwt_required()
 def seed_sample_data():
     user_id = int(get_jwt_identity())
+    from datetime import datetime, timedelta
     # Deactivate existing datasets for this user
     Dataset.query.filter_by(user_id=user_id).update({Dataset.is_active: False})
 
@@ -587,13 +647,43 @@ def seed_sample_data():
     db.session.add(dataset)
     db.session.commit()
 
-    sample_points = [
-        {'float_id': 'F001', 'latitude': 12.4, 'longitude': 68.2, 'temperature': 18.5, 'salinity': 35.1, 'pressure': 500, 'cycle_number': 12},
-        {'float_id': 'F002', 'latitude': 15.1, 'longitude': 70.3, 'temperature': 22.1, 'salinity': 34.8, 'pressure': 300, 'cycle_number': 8},
-        {'float_id': 'F003', 'latitude': 9.8, 'longitude': 65.5, 'temperature': 16.2, 'salinity': 35.4, 'pressure': 700, 'cycle_number': 20},
-        {'float_id': 'F004', 'latitude': 13.6, 'longitude': 72.1, 'temperature': 19.9, 'salinity': 35.0, 'pressure': 450, 'cycle_number': 15},
-        {'float_id': 'F005', 'latitude': 11.2, 'longitude': 69.9, 'temperature': 20.4, 'salinity': 34.9, 'pressure': 550, 'cycle_number': 10},
-    ]
+    sample_points = []
+    # F001 multi-cycle profile (Cycles 1..12)
+    for c in range(1, 13):
+        sample_points.append({
+            'float_id': 'F001',
+            'latitude': 12.4 + (c * 0.05),
+            'longitude': 68.2 + (c * 0.04),
+            'temperature': round(18.5 - (c * 0.12), 2),
+            'salinity': round(35.10 + (c * 0.03), 2),
+            'pressure': 500,
+            'cycle_number': c,
+            'timestamp': datetime(2026, 1, c, 0, 0, 0),
+        })
+    # F002 multi-cycle profile (Cycles 1..10)
+    for c in range(1, 11):
+        sample_points.append({
+            'float_id': 'F002',
+            'latitude': 15.1 + (c * 0.04),
+            'longitude': 70.3 + (c * 0.03),
+            'temperature': round(22.10 - (c * 0.15), 2),
+            'salinity': round(34.80 + (c * 0.02), 2),
+            'pressure': 300,
+            'cycle_number': c,
+            'timestamp': datetime(2026, 1, c, 0, 0, 0),
+        })
+    # F003 multi-cycle profile (Cycles 1..8)
+    for c in range(1, 9):
+        sample_points.append({
+            'float_id': 'F003',
+            'latitude': 9.8 + (c * 0.03),
+            'longitude': 65.5 + (c * 0.05),
+            'temperature': round(16.20 + (c * 0.10), 2),
+            'salinity': round(35.40 - (c * 0.03), 2),
+            'pressure': 700,
+            'cycle_number': c,
+            'timestamp': datetime(2026, 1, c, 0, 0, 0),
+        })
 
     for point in sample_points:
         entry = FloatData(dataset_id=dataset.id, **point)
@@ -601,7 +691,7 @@ def seed_sample_data():
 
     db.session.commit()
     user = User.query.get(user_id)
-    log_event("Seeded sample dataset", email=user.email if user else None)
+    log_event("Seeded sample dataset with multi-cycle float trajectories", email=user.email if user else None)
     return jsonify({'message': 'Sample data seeded successfully'}), 201
 
 
@@ -966,7 +1056,8 @@ def predict():
     X = np.array(feature_rows, dtype=float)
     y = np.array(targets, dtype=float)
 
-    test_size = max(1, round(n * 0.2))
+    # Chronological Train / Test Split (Time-based, no future observation leakage)
+    test_size = max(2, round(n * 0.2)) if n >= 6 else (2 if n >= 4 else 1)
     train_size = n - test_size
     if train_size < 2:
         train_size = n - 1
@@ -975,39 +1066,74 @@ def predict():
     X_train, X_test = X[:train_size], X[train_size:]
     y_train, y_test = y[:train_size], y[train_size:]
 
-    def make_model():
-        if model_type == 'linear_regression':
-            return LinearRegression()
-        return RandomForestRegressor(n_estimators=100, random_state=42)
-
-    eval_model = make_model()
-    eval_model.fit(X_train, y_train)
-    y_pred_test = eval_model.predict(X_test)
+    if model_type == 'linear_regression':
+        eval_model = LinearRegression()
+        eval_model.fit(X_train, y_train)
+        y_pred_test = eval_model.predict(X_test)
+    else:
+        # Trend-adjusted Random Forest for out-of-sample time-series forecasting
+        lr_trend_eval = LinearRegression().fit(X_train[:, :1], y_train)
+        res_train = y_train - lr_trend_eval.predict(X_train[:, :1])
+        rf_eval = RandomForestRegressor(n_estimators=100, random_state=42)
+        rf_eval.fit(X_train, res_train)
+        y_pred_test = lr_trend_eval.predict(X_test[:, :1]) + rf_eval.predict(X_test)
 
     mae = float(mean_absolute_error(y_test, y_pred_test))
     rmse = float(np.sqrt(mean_squared_error(y_test, y_pred_test)))
-    r2 = float(r2_score(y_test, y_pred_test)) if len(y_test) > 1 else None
+    
+    if len(y_test) > 1:
+        try:
+            raw_r2 = r2_score(y_test, y_pred_test)
+            r2 = None if (np.isnan(raw_r2) or np.isinf(raw_r2)) else float(raw_r2)
+        except Exception:
+            r2 = None
+    else:
+        r2 = None
 
+    names = ['Cycle Number', 'Pressure', 'Latitude', 'Longitude']
     feature_importance = None
-    if model_type == 'random_forest':
-        importances = eval_model.feature_importances_
-        names = ['Cycle Number', 'Pressure', 'Latitude', 'Longitude']
-        total = sum(importances) or 1
+
+    if float_id and float_id != 'all':
+        last_cycle = int(X[-1][0])
+        last_pressure, last_lat, last_lon = X[-1][1], X[-1][2], X[-1][3]
+        latest_actual = round(float(y[-1]), 2)
+    else:
+        last_cycle = int(np.max(X[:, 0]))
+        last_pressure = float(np.mean(X[:, 1]))
+        last_lat = float(np.mean(X[:, 2]))
+        last_lon = float(np.mean(X[:, 3]))
+        latest_actual = round(float(np.mean(y[-5:])), 2) if len(y) >= 5 else round(float(y[-1]), 2)
+
+    if model_type == 'linear_regression':
+        final_model = LinearRegression()
+        final_model.fit(X, y)
+        importances = np.abs(final_model.coef_)
+        total = float(np.sum(importances)) or 1.0
         feature_importance = {
             names[i]: round(float(importances[i]) / total * 100, 1) for i in range(len(names))
         }
+        def predict_future(f_cycle, f_pres, f_lat, f_lon):
+            return float(final_model.predict([[f_cycle, f_pres, f_lat, f_lon]])[0])
+    else:
+        final_model = RandomForestRegressor(n_estimators=100, random_state=42)
+        final_model.fit(X, y)
+        importances = final_model.feature_importances_
+        total = float(np.sum(importances)) or 1.0
+        feature_importance = {
+            names[i]: round(float(importances[i]) / total * 100, 1) for i in range(len(names))
+        }
+        lr_trend_final = LinearRegression().fit(X[:, :1], y)
+        step_slope = float(lr_trend_final.coef_[0]) if len(lr_trend_final.coef_) > 0 else 0.0
+        base_pred = float(final_model.predict([[last_cycle, last_pressure, last_lat, last_lon]])[0])
 
-    final_model = make_model()
-    final_model.fit(X, y)
-
-    last_cycle = int(X[-1][0])
-    last_pressure, last_lat, last_lon = X[-1][1], X[-1][2], X[-1][3]
+        def predict_future(f_cycle, f_pres, f_lat, f_lon):
+            step_offset = f_cycle - last_cycle
+            return base_pred + (step_slope * step_offset)
 
     forecast = []
     for step in range(1, horizon + 1):
         future_cycle = last_cycle + step
-        future_X = np.array([[future_cycle, last_pressure, last_lat, last_lon]])
-        pred_val = float(final_model.predict(future_X)[0])
+        pred_val = predict_future(future_cycle, last_pressure, last_lat, last_lon)
         forecast.append({'step': step, 'cycle': future_cycle, 'predicted_value': round(pred_val, 2)})
 
     historical_series = []
@@ -1029,7 +1155,7 @@ def predict():
         'target': target,
         'float_id': float_id,
         'horizon': horizon,
-        'latest_actual_value': round(float(y[-1]), 2),
+        'latest_actual_value': latest_actual,
         'historical_series': historical_series,
         'forecast': forecast,
         'metrics': {

@@ -26,7 +26,7 @@ class _PredictionScreenState extends State<PredictionScreen> {
   String _selectedFloat = 'all';
   int _horizon = 5;
   bool _inputsExpanded = false;
-  bool _detailsExpanded = false;
+  bool _detailsExpanded = true;
 
   _RunState _runState = _RunState.idle;
   String? _errorMessage;
@@ -63,9 +63,11 @@ class _PredictionScreenState extends State<PredictionScreen> {
       _summary = summaryResult['body'];
       _datasetState = _DatasetState.ready;
     });
+
+    _runPrediction();
   }
 
-  Future<void> _runPrediction() async {
+  Future<void> _runPrediction({bool isManualRun = false}) async {
     if (_runState == _RunState.preparing || _runState == _RunState.training || _runState == _RunState.generating) {
       return; // no simultaneous requests
     }
@@ -93,7 +95,9 @@ class _PredictionScreenState extends State<PredictionScreen> {
       setState(() {
         _result = result;
         _runState = _RunState.done;
-        _history.insert(0, PredictionHistoryEntry(result: result, generatedAt: DateTime.now()));
+        if (isManualRun) {
+          _history.insert(0, PredictionHistoryEntry(result: result, generatedAt: DateTime.now()));
+        }
       });
     } on PredictionException catch (e) {
       if (!mounted) return;
@@ -183,14 +187,34 @@ class _PredictionScreenState extends State<PredictionScreen> {
       selectedFloat: _selectedFloat,
       floatIds: _floatIds,
       horizon: _horizon,
-      onModelChanged: (v) => setState(() => _model = v),
-      onTargetChanged: (v) => setState(() => _target = v),
-      onFloatChanged: (v) => setState(() => _selectedFloat = v),
-      onHorizonChanged: (v) => setState(() => _horizon = v),
+      onModelChanged: (v) {
+        if (_model != v) {
+          setState(() => _model = v);
+          _runPrediction();
+        }
+      },
+      onTargetChanged: (v) {
+        if (_target != v) {
+          setState(() => _target = v);
+          _runPrediction();
+        }
+      },
+      onFloatChanged: (v) {
+        if (_selectedFloat != v) {
+          setState(() => _selectedFloat = v);
+          _runPrediction();
+        }
+      },
+      onHorizonChanged: (v) {
+        if (_horizon != v) {
+          setState(() => _horizon = v);
+          _runPrediction();
+        }
+      },
       inputsExpanded: _inputsExpanded,
       onToggleInputs: () => setState(() => _inputsExpanded = !_inputsExpanded),
     );
-    final runButton = _RunButton(isBusy: _isBusy, statusText: _statusText, onPressed: _runPrediction);
+    final runButton = _RunButton(isBusy: _isBusy, statusText: _statusText, onPressed: () => _runPrediction(isManualRun: true));
 
     final resultSection = _runState == _RunState.failed
         ? _ErrorCard(message: _errorMessage ?? 'Prediction failed.', onRetry: _runPrediction)
@@ -544,6 +568,8 @@ class _ResultSection extends StatelessWidget {
     final unit = result.target == 'temperature' ? '°C' : 'PSU';
     final modelLabel = result.model == 'linear_regression' ? 'Linear Regression' : 'Random Forest';
 
+    final isAllFloats = result.floatId == 'all';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -551,16 +577,29 @@ class _ResultSection extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Forecast Result', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Forecast Result', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  if (isAllFloats)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(color: Colors.cyan.shade100, borderRadius: BorderRadius.circular(8)),
+                      child: Text('Aggregated (All Floats)',
+                          style: TextStyle(color: Colors.cyan.shade900, fontSize: 11, fontWeight: FontWeight.bold)),
+                    ),
+                ],
+              ),
               const Divider(height: 20),
               Text('Predicted ${result.target == 'temperature' ? 'Temperature' : 'Salinity'}',
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5)),
               Text('${result.forecast.last.predictedValue}$unit',
                   style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
               const SizedBox(height: 10),
+              _row('Scope', isAllFloats ? 'Dataset-wide Aggregated Model' : 'Float ${result.floatId}'),
               _row('Model', modelLabel),
-              _row('Forecast Horizon', 'Next ${result.horizon} cycles'),
-              _row('Latest Actual Value', '${result.latestActualValue}$unit'),
+              _row('Forecast Horizon', isAllFloats ? '+${result.horizon} horizon steps' : 'Next ${result.horizon} cycles'),
+              _row('Latest Observed Value', '${result.latestActualValue}$unit'),
               _row('Expected Change', '${result.expectedChange >= 0 ? '+' : ''}${result.expectedChange.toStringAsFixed(2)}$unit'),
               const SizedBox(height: 10),
               Container(
@@ -578,7 +617,7 @@ class _ResultSection extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
-        if (result.floatId == 'all')
+        if (isAllFloats)
           const _AllFloatsChartNotice()
         else if (result.historicalSeries.isNotEmpty)
           _ForecastChart(result: result, unit: unit),
@@ -607,7 +646,10 @@ class _ResultSection extends StatelessWidget {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text('Cycle #${f.cycle}', style: const TextStyle(fontSize: 12.5)),
+                                  Text(
+                                    isAllFloats ? 'Horizon Step +${f.step} (Aggregated)' : 'Cycle #${f.cycle}',
+                                    style: const TextStyle(fontSize: 12.5),
+                                  ),
                                   Text('Predicted: ${f.predictedValue}$unit',
                                       style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
                                 ],
@@ -687,8 +729,20 @@ class _ForecastChart extends StatelessWidget {
       forecastSpots.add(FlSpot(f.cycle.toDouble(), f.predictedValue));
     }
 
+    final allValues = [
+      ...result.historicalSeries.map((h) => h.value),
+      ...result.forecast.map((f) => f.predictedValue),
+    ];
+    final minVal = allValues.reduce(min);
+    final maxVal = allValues.reduce(max);
+    final delta = (maxVal - minVal).abs();
+    final padding = delta == 0 ? 1.0 : delta * 0.15;
+    final minY = minVal - padding;
+    final maxY = maxVal + padding;
+
     final totalPoints = result.historicalSeries.length + result.forecast.length;
-    final chartWidth = max(MediaQuery.of(context).size.width - 64, totalPoints * 45.0);
+    final contentWidth = (totalPoints * 42.0).clamp(420.0, 10000.0);
+    final lastActualCycle = histSpots.last.x;
 
     return _SoftCard(
       child: Column(
@@ -698,89 +752,179 @@ class _ForecastChart extends StatelessWidget {
           const SizedBox(height: 6),
           Row(
             children: [
-              _legendDot(Colors.cyan.shade700, 'Actual'),
+              _legendDot(Colors.cyan.shade700, 'Actual', isFilled: true),
               const SizedBox(width: 16),
-              _legendDot(Colors.orange.shade600, 'Forecast'),
+              _legendDot(Colors.orange.shade600, 'Forecast', isFilled: false),
             ],
           ),
           const SizedBox(height: 12),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: chartWidth,
-              height: 230,
-              child: LineChart(
-                LineChartData(
-                  titlesData: FlTitlesData(
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 24,
-                        getTitlesWidget: (val, meta) {
-                          return Text('#${val.toInt()}', style: const TextStyle(fontSize: 9.5));
-                        },
-                      ),
-                    ),
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 44,
-                        getTitlesWidget: (val, meta) {
-                          return Text('${val.toStringAsFixed(1)}$unit', style: const TextStyle(fontSize: 9.5));
-                        },
-                      ),
-                    ),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  ),
-                  gridData: const FlGridData(show: true),
-                  borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey.shade300)),
-                  lineTouchData: LineTouchData(
-                    touchTooltipData: LineTouchTooltipData(
-                      getTooltipItems: (touchedSpots) => touchedSpots.map((s) {
-                        final cycleNum = s.x.round();
-                        final isForecast = s.barIndex == 1 && s.spotIndex > 0;
-                        final statusLabel = isForecast ? 'Forecast' : 'Actual';
-                        final valLabel = isForecast
-                            ? 'Predicted $targetName: ${s.y.toStringAsFixed(2)}$unit'
-                            : 'Actual $targetName: ${s.y.toStringAsFixed(2)}$unit';
-
-                        return LineTooltipItem(
-                          'Cycle #$cycleNum\n$valLabel\nStatus: $statusLabel',
-                          const TextStyle(color: Colors.white, fontSize: 11),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: histSpots,
-                      isCurved: true,
-                      color: Colors.cyan.shade700,
-                      barWidth: 3.0,
-                      dotData: const FlDotData(show: true),
-                      belowBarData: BarAreaData(show: true, color: Colors.cyan.shade700.withValues(alpha: 0.08)),
-                    ),
-                    LineChartBarData(
-                      spots: forecastSpots,
-                      isCurved: true,
-                      color: Colors.orange.shade600,
-                      barWidth: 3.0,
-                      dashArray: [6, 4],
-                      dotData: FlDotData(
-                        show: true,
-                        getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
-                          radius: 4,
-                          color: Colors.white,
-                          strokeWidth: 2.5,
-                          strokeColor: Colors.orange.shade600,
+          SizedBox(
+            height: 240,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Fixed Left Y-Axis
+                SizedBox(
+                  width: 55,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: LineChart(
+                          LineChartData(
+                            minY: minY,
+                            maxY: maxY,
+                            minX: 0,
+                            maxX: 1,
+                            lineBarsData: [],
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                axisNameWidget: Text(
+                                  result.target == 'temperature' ? 'Temp (°C)' : 'Sal (PSU)',
+                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87),
+                                ),
+                                axisNameSize: 16,
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 38,
+                                  getTitlesWidget: (val, meta) {
+                                    return Text(
+                                      val.toStringAsFixed(1),
+                                      style: const TextStyle(fontSize: 9.5, color: Colors.black87),
+                                    );
+                                  },
+                                ),
+                              ),
+                              bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            gridData: const FlGridData(show: false),
+                            borderData: FlBorderData(show: false),
+                          ),
                         ),
                       ),
-                      belowBarData: BarAreaData(show: true, color: Colors.orange.shade600.withValues(alpha: 0.08)),
-                    ),
-                  ],
+                      const SizedBox(height: 26),
+                    ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 4),
+                // Horizontally Scrollable Plot Area
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SizedBox(
+                      width: contentWidth,
+                      child: LineChart(
+                        LineChartData(
+                          minY: minY,
+                          maxY: maxY,
+                          titlesData: FlTitlesData(
+                            bottomTitles: AxisTitles(
+                              axisNameWidget: const Text(
+                                'Cycle Number',
+                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87),
+                              ),
+                              axisNameSize: 16,
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                reservedSize: 22,
+                                getTitlesWidget: (val, meta) {
+                                  return Text('#${val.toInt()}', style: const TextStyle(fontSize: 9.5));
+                                },
+                              ),
+                            ),
+                            leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          ),
+                          gridData: const FlGridData(show: true),
+                          borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey.shade300)),
+                          extraLinesData: ExtraLinesData(
+                            verticalLines: [
+                              VerticalLine(
+                                x: lastActualCycle,
+                                color: Colors.orange.shade700,
+                                strokeWidth: 1.5,
+                                dashArray: [4, 4],
+                                  label: VerticalLineLabel(
+                                    show: true,
+                                    alignment: Alignment.topRight,
+                                    labelResolver: (line) => 'Forecast starts',
+                                    style: TextStyle(
+                                      color: Colors.orange.shade900,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      backgroundColor: Colors.orange.shade50.withValues(alpha: 0.8),
+                                    ),
+                                  ),
+                              ),
+                            ],
+                          ),
+                          lineTouchData: LineTouchData(
+                            touchTooltipData: LineTouchTooltipData(
+                              getTooltipItems: (touchedSpots) {
+                                if (touchedSpots.isEmpty) return [];
+                                final items = <LineTooltipItem?>[];
+                                final seenCycles = <int>{};
+
+                                for (final s in touchedSpots) {
+                                  final cycleNum = s.x.round();
+                                  final isForecast = s.barIndex == 1 && s.spotIndex > 0;
+
+                                  if (seenCycles.contains(cycleNum)) {
+                                    items.add(null);
+                                    continue;
+                                  }
+                                  seenCycles.add(cycleNum);
+
+                                  final statusLabel = isForecast ? 'Forecast' : 'Actual';
+                                  final valTypeLabel = isForecast ? 'Predicted $targetName' : 'Actual $targetName';
+                                  final valStr = '${s.y.toStringAsFixed(2)}$unit';
+
+                                  items.add(
+                                    LineTooltipItem(
+                                      'Cycle #$cycleNum\n$valTypeLabel: $valStr\nStatus: $statusLabel',
+                                      const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
+                                    ),
+                                  );
+                                }
+                                return items;
+                              },
+                            ),
+                          ),
+                          lineBarsData: [
+                            LineChartBarData(
+                              spots: histSpots,
+                              isCurved: true,
+                              color: Colors.cyan.shade700,
+                              barWidth: 3.0,
+                              dotData: const FlDotData(show: true),
+                              belowBarData: BarAreaData(show: true, color: Colors.cyan.shade700.withValues(alpha: 0.08)),
+                            ),
+                            LineChartBarData(
+                              spots: forecastSpots,
+                              isCurved: true,
+                              color: Colors.orange.shade600,
+                              barWidth: 3.0,
+                              dashArray: [6, 4],
+                              dotData: FlDotData(
+                                show: true,
+                                getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
+                                  radius: 4,
+                                  color: Colors.white,
+                                  strokeWidth: 2.5,
+                                  strokeColor: Colors.orange.shade600,
+                                ),
+                              ),
+                              belowBarData: BarAreaData(show: true, color: Colors.orange.shade600.withValues(alpha: 0.08)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -788,13 +932,17 @@ class _ForecastChart extends StatelessWidget {
     );
   }
 
-  Widget _legendDot(Color c, String label) => Row(
+  Widget _legendDot(Color c, String label, {required bool isFilled}) => Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
             width: 10,
             height: 10,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: c),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isFilled ? c : Colors.white,
+              border: Border.all(color: c, width: 2),
+            ),
           ),
           const SizedBox(width: 6),
           Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),

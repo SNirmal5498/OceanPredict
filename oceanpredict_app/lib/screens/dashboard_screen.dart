@@ -95,9 +95,10 @@ class _DashboardScreenState extends State<DashboardScreen>
 
       final tempAvg = (data['avg_temperature'] as num?)?.toDouble();
       final salAvg = (data['avg_salinity'] as num?)?.toDouble();
+      final totalRecs = (data['total_records'] as num?)?.toInt() ?? 0;
 
       OceanHealthResult? health;
-      if (tempAvg != null && salAvg != null) {
+      if (tempAvg != null && salAvg != null && totalRecs > 0) {
         health = OceanHealthService.calculate(
           avgTemp: tempAvg,
           minTemp: (temp?['min'] as num?)?.toDouble(),
@@ -106,14 +107,27 @@ class _DashboardScreenState extends State<DashboardScreen>
           minSalinity: (sal?['min'] as num?)?.toDouble(),
           maxSalinity: (sal?['max'] as num?)?.toDouble(),
           maxPressure: (pres?['max_depth'] as num?)?.toDouble(),
+          observationCount: totalRecs,
         );
+      }
+
+      final activeId = (data['dataset_id'] as num?)?.toInt();
+      final activeName = data['dataset_name'] as String? ?? 'Dataset';
+
+      if (activeId != null && !loadedDatasets.any((d) => d['id'] == activeId)) {
+        loadedDatasets.insert(0, {
+          'id': activeId,
+          'filename': activeName,
+          'total_records': totalRecs,
+        });
       }
 
       setState(() {
         _hasActiveDataset = true;
-        _activeDatasetId = data['dataset_id'];
-        _datasetName = data['dataset_name'] ?? 'Dataset';
+        _activeDatasetId = activeId;
+        _datasetName = activeName;
         _fileSize = data['file_size'] ?? 0;
+        _uploadDate = data['upload_date'] ?? '';
         _totalRecords = '${data['total_records'] ?? 0}';
         _activeFloats = '${data['active_floats'] ?? 0}';
         _avgTemp = tempAvg != null ? '${tempAvg.toStringAsFixed(2)}°C' : 'N/A';
@@ -388,7 +402,10 @@ class _DashboardScreenState extends State<DashboardScreen>
               _fadeSlide(
                 start: 0.2,
                 end: 0.7,
-                child: _OceanHealthCard(health: _oceanHealth),
+                child: _OceanHealthCard(
+                  health: _oceanHealth,
+                  hasActiveDataset: _hasActiveDataset,
+                ),
               ),
               const SizedBox(height: 20),
               _fadeSlide(
@@ -758,47 +775,36 @@ class _StatCard extends StatelessWidget {
 // ============================================================
 class _OceanHealthCard extends StatelessWidget {
   final OceanHealthResult? health;
+  final bool hasActiveDataset;
 
-  const _OceanHealthCard({required this.health});
+  const _OceanHealthCard({
+    required this.health,
+    required this.hasActiveDataset,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (health == null) {
-      return Container(
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.06),
-              blurRadius: 16,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Icon(Icons.health_and_safety_outlined, color: Colors.grey.shade500, size: 40),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Ocean Health Score',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Not available',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+    if (!hasActiveDataset) {
+      return _buildCard(
+        scoreText: 'No Data',
+        statusText: 'No Dataset',
+        color: Colors.grey.shade600,
+      );
+    }
+
+    if (health == null || health!.status == 'No Data' || health!.status == 'Insufficient Data') {
+      return _buildCard(
+        scoreText: 'Not Evaluated',
+        statusText: 'Insufficient Data',
+        color: Colors.amber.shade700,
+      );
+    }
+
+    if (health!.status == 'Error') {
+      return _buildCard(
+        scoreText: 'Error',
+        statusText: 'Calculation Error',
+        color: Colors.red.shade700,
       );
     }
 
@@ -900,6 +906,77 @@ class _OceanHealthCard extends StatelessWidget {
                       ),
                     ),
                   ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCard({
+    required String scoreText,
+    required String statusText,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(Icons.health_and_safety_outlined, color: color, size: 28),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Ocean Health Index',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  scoreText,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    'Status: $statusText',
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 11.5,
+                    ),
+                  ),
                 ),
               ],
             ),
