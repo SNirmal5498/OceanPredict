@@ -556,18 +556,27 @@ class _DatasetSelectorCard extends StatelessWidget {
                 value: activeDatasetId,
                 isExpanded: true,
                 hint: const Text('Select dataset'),
-                items: datasets.map((d) {
-                  final id = d['id'] as int;
-                  final name = d['filename'] as String? ?? 'Dataset #$id';
-                  return DropdownMenuItem<int>(
-                    value: id,
-                    child: Text(
-                      name,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
-                    ),
-                  );
-                }).toList(),
+                items: (() {
+                  final uniqueMap = <int, Map<String, dynamic>>{};
+                  for (var d in datasets) {
+                    final id = (d['id'] as num?)?.toInt();
+                    if (id != null) {
+                      uniqueMap.putIfAbsent(id, () => d);
+                    }
+                  }
+                  return uniqueMap.values.map((d) {
+                    final id = (d['id'] as num).toInt();
+                    final name = d['filename'] as String? ?? 'Dataset #$id';
+                    return DropdownMenuItem<int>(
+                      value: id,
+                      child: Text(
+                        name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                      ),
+                    );
+                  }).toList();
+                })(),
                 onChanged: (val) {
                   if (val != null) onChanged(val);
                 },

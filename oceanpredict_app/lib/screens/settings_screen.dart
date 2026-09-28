@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../services/settings_service.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -13,6 +14,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // User Profile State
   Map<String, dynamic>? _userProfile;
   bool _isLoadingUser = true;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -21,18 +23,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _fetchUserProfile() async {
-    setState(() => _isLoadingUser = true);
-    try {
-      // Reusing ApiService if currentUser endpoint exists
-      final result = await ApiService.getDashboardStats(); // Fallback check
-      if (result['statusCode'] == 200 && result['body']['user'] != null) {
-        _userProfile = result['body']['user'];
-      }
-    } catch (_) {
-      // Graceful fallback if no user auth state backend is initialized
-    } finally {
-      if (mounted) setState(() => _isLoadingUser = false);
+    if (mounted) {
+      setState(() {
+        _isLoadingUser = true;
+        _errorMessage = null;
+      });
     }
+
+    try {
+      final token = await AuthService.getToken();
+      if (token == null || token.isEmpty) {
+        final localUser = AuthService.currentUser;
+        if (localUser != null) {
+          _userProfile = localUser.toJson();
+        } else {
+          _errorMessage = 'No active session token.';
+        }
+      } else {
+        final result = await ApiService.getProfile(token);
+        if (result['statusCode'] == 200 && result['body'] != null) {
+          final profileData = result['body'] as Map<String, dynamic>;
+          _userProfile = profileData;
+          await AuthService.updateUserData(profileData);
+        } else {
+          final localUser = AuthService.currentUser;
+          if (localUser != null) {
+            _userProfile = localUser.toJson();
+          } else {
+            final body = result['body'];
+            _errorMessage = (body is Map && body.containsKey('message'))
+                ? body['message']
+                : (body is Map && body.containsKey('error'))
+                    ? body['error']
+                    : 'Failed to load user profile.';
+          }
+        }
+      }
+    } catch (e) {
+      final localUser = AuthService.currentUser;
+      if (localUser != null) {
+        _userProfile = localUser.toJson();
+      } else {
+        _errorMessage = 'Error loading profile: $e';
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingUser = false);
+      }
+    }
+  }
+
+  String _formatRole(String? rawRole) {
+    if (rawRole == null || rawRole.isEmpty) return 'User';
+    final lower = rawRole.toLowerCase();
+    if (lower == 'admin') return 'Admin';
+    if (lower == 'user') return 'User';
+    return rawRole[0].toUpperCase() + rawRole.substring(1);
   }
 
   @override
@@ -124,9 +170,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Profile Section Components
   // ==========================================
   Widget _buildProfileCard(bool isDark) {
-    final name = _userProfile?['name'] ?? 'N/A';
-    final email = _userProfile?['email'] ?? 'N/A';
-    final role = _userProfile?['role'] ?? 'N/A';
+    final name = _userProfile?['name'] ?? AuthService.currentUser?.name ?? 'User';
+    final email = _userProfile?['email'] ?? AuthService.currentUser?.email ?? '';
+    final rawRole = _userProfile?['role'] ?? AuthService.currentUser?.role ?? 'User';
+    final role = _formatRole(rawRole);
 
     return _buildCardShell(
       child: Column(
@@ -142,30 +189,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Expanded(
                 child: _isLoadingUser
                     ? const Align(alignment: Alignment.centerLeft, child: CircularProgressIndicator())
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                          const SizedBox(height: 2),
-                          Text(email, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-                          const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              'Role: $role',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: Theme.of(context).colorScheme.primary,
+                    : _errorMessage != null && _userProfile == null
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _errorMessage!,
+                                style: const TextStyle(color: Colors.red, fontSize: 13),
                               ),
-                            ),
+                              const SizedBox(height: 4),
+                              InkWell(
+                                onTap: _fetchUserProfile,
+                                child: Text(
+                                  'Tap to retry',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Theme.of(context).colorScheme.primary,
+                                    decoration: TextDecoration.underline,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                              const SizedBox(height: 2),
+                              Text(email, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                              const SizedBox(height: 4),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  'Role: $role',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Theme.of(context).colorScheme.primary,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
               ),
             ],
           ),
@@ -184,54 +253,103 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _openEditProfileModal() {
-    final nameCtrl = TextEditingController(text: _userProfile?['name'] ?? '');
-    final emailCtrl = TextEditingController(text: _userProfile?['email'] ?? '');
+    final initialName = _userProfile?['name'] ?? AuthService.currentUser?.name ?? '';
+    final initialEmail = _userProfile?['email'] ?? AuthService.currentUser?.email ?? '';
+    final nameCtrl = TextEditingController(text: initialName);
+    final emailCtrl = TextEditingController(text: initialEmail);
     final formKey = GlobalKey<FormState>();
+    bool isSaving = false;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Edit Profile'),
-        content: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(labelText: 'User Name'),
-                validator: (v) => v == null || v.trim().isEmpty ? 'Name required' : null,
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: emailCtrl,
-                decoration: const InputDecoration(labelText: 'Email'),
-                validator: (v) => v == null || !v.contains('@') ? 'Valid email required' : null,
-              ),
-            ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          title: const Text('Edit Profile'),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(labelText: 'User Name'),
+                  validator: (v) => v == null || v.trim().isEmpty ? 'Name required' : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: emailCtrl,
+                  decoration: const InputDecoration(labelText: 'Email'),
+                  validator: (v) => v == null || !v.contains('@') ? 'Valid email required' : null,
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: isSaving ? null : () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: isSaving
+                  ? null
+                  : () async {
+                      if (formKey.currentState!.validate()) {
+                        setModalState(() => isSaving = true);
+                        final newName = nameCtrl.text.trim();
+                        final newEmail = emailCtrl.text.trim();
+
+                        final token = await AuthService.getToken();
+                        final result = await ApiService.updateProfile(newName, newEmail, token);
+
+                        if (!context.mounted) return;
+
+                        if (result['statusCode'] == 200) {
+                          final bodyUser = (result['body'] is Map && result['body']['user'] != null)
+                              ? result['body']['user'] as Map<String, dynamic>
+                              : {'name': newName, 'email': newEmail};
+
+                          await AuthService.updateUserData(bodyUser);
+
+                          if (mounted) {
+                            setState(() {
+                              _userProfile = {
+                                ...(_userProfile ?? {}),
+                                ...bodyUser,
+                              };
+                            });
+                          }
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Profile updated successfully.')),
+                            );
+                          }
+                        } else {
+                          setModalState(() => isSaving = false);
+                          final body = result['body'];
+                          final msg = (body is Map && body.containsKey('message'))
+                              ? body['message']
+                              : (body is Map && body.containsKey('error'))
+                                  ? body['error']
+                                  : 'Failed to update profile';
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(msg)),
+                            );
+                          }
+                        }
+                      }
+                    },
+              child: isSaving
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Save Changes'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              if (formKey.currentState!.validate()) {
-                setState(() {
-                  _userProfile = {
-                    ...(_userProfile ?? {}),
-                    'name': nameCtrl.text.trim(),
-                    'email': emailCtrl.text.trim(),
-                  };
-                });
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Profile updated locally.')),
-                );
-              }
-            },
-            child: const Text('Save Changes'),
-          ),
-        ],
       ),
     );
   }
@@ -531,10 +649,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         icon: const Icon(Icons.logout, color: Colors.red, size: 18),
         label: const Text('Logout', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-        onPressed: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Logged out.')),
-          );
+        onPressed: () async {
+          await AuthService.logout();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Logged out.')),
+            );
+            Navigator.pushReplacementNamed(context, '/login');
+          }
         },
       ),
     );

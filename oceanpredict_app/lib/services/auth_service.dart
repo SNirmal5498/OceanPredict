@@ -78,6 +78,15 @@ class AuthService {
     }
   }
 
+  /// Updates local user session state and persisted user_data in SharedPreferences
+  static Future<void> updateUserData(Map<String, dynamic> userData) async {
+    final prefs = await SharedPreferences.getInstance();
+    final currentMap = _currentUser?.toJson() ?? {};
+    final updatedMap = {...currentMap, ...userData};
+    await prefs.setString(_userKey, jsonEncode(updatedMap));
+    _currentUser = UserModel.fromJson(updatedMap);
+  }
+
   /// Clears stored token and resets session state
   static Future<void> logout() async {
     final prefs = await SharedPreferences.getInstance();

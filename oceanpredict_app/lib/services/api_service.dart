@@ -66,6 +66,32 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>> getProfile([String? token]) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/auth/profile'),
+        headers: await _headers(token),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> updateProfile(
+      String name, String email, [String? token]) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$baseUrl/api/auth/profile'),
+        headers: await _headers(token),
+        body: jsonEncode({'name': name, 'email': email}),
+      );
+      return _handleResponse(response);
+    } catch (e) {
+      return {'statusCode': 500, 'body': {'error': 'Network failure: $e'}};
+    }
+  }
+
   // --- ADMIN ENDPOINTS (WITH BEARER TOKEN) ---
   static Future<Map<String, dynamic>> getAdminStats([String? token]) async {
     try {

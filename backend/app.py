@@ -193,6 +193,58 @@ def login():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/auth/profile', methods=['GET', 'PUT', 'OPTIONS'])
+@jwt_required(optional=True)
+def auth_profile():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+
+    user_id = get_jwt_identity()
+    if not user_id:
+        return jsonify({'message': 'Missing or invalid token'}), 401
+
+    user = User.query.get(int(user_id))
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    if request.method == 'GET':
+        return jsonify({
+            'id': user.id,
+            'name': user.name,
+            'email': user.email,
+            'role': user.role,
+            'status': user.status
+        }), 200
+
+    if request.method == 'PUT':
+        data = request.get_json() or {}
+        name = data.get('name')
+        email = data.get('email')
+
+        if name and name.strip():
+            user.name = name.strip()
+        if email and email.strip():
+            new_email = email.strip().lower()
+            if new_email != user.email:
+                existing = User.query.filter_by(email=new_email).first()
+                if existing and existing.id != user.id:
+                    return jsonify({'message': 'Email already registered'}), 400
+                user.email = new_email
+
+        db.session.commit()
+        log_event(f"Profile updated for user {user.id}", user.email)
+        return jsonify({
+            'message': 'Profile updated successfully',
+            'user': {
+                'id': user.id,
+                'name': user.name,
+                'email': user.email,
+                'role': user.role,
+                'status': user.status
+            }
+        }), 200
+
+
 # ==================================================
 # ADMIN PANEL ENDPOINTS
 # ==================================================
