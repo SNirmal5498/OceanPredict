@@ -10,7 +10,9 @@ import 'reports_screen.dart';
 import 'settings_screen.dart';
 import 'admin_screen.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../services/ocean_health_service.dart';
+import '../widgets/app_drawer.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -71,7 +73,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     final statsRes = await ApiService.getDashboardStats();
     final datasetsRes = await ApiService.getDatasets();
     final analyticsRes = await ApiService.getAnalyticsSummary();
-    final logsRes = await ApiService.getAdminLogs('');
+    final isAdmin = AuthService.currentUser?.role.toLowerCase() == 'admin';
+    final logsRes = isAdmin ? await ApiService.getAdminLogs('') : null;
 
     if (!mounted) return;
 
@@ -81,7 +84,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
 
     List<Map<String, dynamic>> loadedLogs = [];
-    if (logsRes['statusCode'] == 200 && logsRes['body'] is List) {
+    if (logsRes != null && logsRes['statusCode'] == 200 && logsRes['body'] is List) {
       loadedLogs = List<Map<String, dynamic>>.from(logsRes['body']);
     }
 
@@ -215,132 +218,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         backgroundColor: Colors.cyan.shade700,
         foregroundColor: Colors.white,
       ),
-      drawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            DrawerHeader(
-              decoration: BoxDecoration(color: Colors.cyan.shade700),
-              child: const Row(
-                children: [
-                  Icon(Icons.water, color: Colors.white, size: 40),
-                  SizedBox(width: 12),
-                  Text(
-                    'OceanPredict',
-                    style: TextStyle(color: Colors.white, fontSize: 22),
-                  ),
-                ],
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.dashboard_outlined),
-              title: const Text('Dashboard'),
-              onTap: () => Navigator.pop(context),
-            ),
-            ListTile(
-              leading: const Icon(Icons.upload_file_outlined),
-              title: const Text('Upload Dataset'),
-              onTap: () async {
-                Navigator.pop(context);
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const UploadScreen()),
-                );
-                _loadStats();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.analytics_outlined),
-              title: const Text('Analytics'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const AnalyticsScreen()),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.map_outlined),
-              title: const Text('Ocean Map'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const MapScreen()),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.route_outlined),
-              title: const Text('Float Tracker'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const TrackerScreen()),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.auto_graph_outlined),
-              title: const Text('AI Prediction'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const PredictionScreen()),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.description_outlined),
-              title: const Text('Reports'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const ReportsScreen()),
-                );
-              },
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('Settings'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.admin_panel_settings_outlined),
-              title: const Text('Admin Panel'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const AdminScreen()),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.logout, color: Colors.red),
-              title: const Text('Logout', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pushAndRemoveUntil(
-                  context,
-                  MaterialPageRoute(builder: (context) => const LoginScreen()),
-                  (route) => false,
-                );
-              },
-            ),
-          ],
-        ),
-      ),
+      drawer: const AppDrawer(),
       backgroundColor: const Color(0xFFF3FAFC),
       body: RefreshIndicator(
         onRefresh: _loadStats,

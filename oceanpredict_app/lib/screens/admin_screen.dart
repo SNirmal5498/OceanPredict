@@ -41,6 +41,17 @@ class _AdminScreenState extends State<AdminScreen>
   }
 
   Future<void> _loadAdminData() async {
+    final currentUser = AuthService.currentUser;
+    if (currentUser == null || currentUser.role.toLowerCase() != 'admin') {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = false;
+        });
+      }
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _hasError = false;
@@ -324,16 +335,18 @@ class _AdminScreenState extends State<AdminScreen>
               child: Icon(icon, color: Colors.cyan.shade700),
             ),
             const SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
-                    style:
-                        const TextStyle(fontSize: 12, color: Colors.black54)),
-                Text(value,
-                    style: const TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.bold)),
-              ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.black54)),
+                  Text(value,
+                      style: const TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.bold)),
+                ],
+              ),
             ),
           ],
         ),

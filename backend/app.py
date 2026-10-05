@@ -105,9 +105,13 @@ def get_active_dataset(user_id=None):
 def admin_required():
     def decorator(fn):
         @wraps(fn)
-        @jwt_required()
+        @jwt_required(optional=True)
         def wrapper(*args, **kwargs):
+            if request.method == 'OPTIONS':
+                return jsonify({'status': 'ok'}), 200
             user_id = get_jwt_identity()
+            if not user_id:
+                return jsonify({'message': 'Missing or invalid token'}), 401
             user = User.query.get(int(user_id))
             if not user or user.role.lower() != 'admin':
                 return jsonify({'message': 'Admin privilege required.'}), 403
@@ -140,7 +144,8 @@ def register():
             return jsonify({'message': 'Email already registered'}), 400
 
         hashed_password = generate_password_hash(data['password'])
-        role = data.get('role', 'user')
+        # Public registration always creates standard 'user' role
+        role = 'user'
         new_user = User(
             name=data.get('name', 'User'),
             email=data['email'],
@@ -249,7 +254,7 @@ def auth_profile():
 # ADMIN PANEL ENDPOINTS
 # ==================================================
 
-@app.route('/api/admin/stats', methods=['GET'])
+@app.route('/api/admin/stats', methods=['GET', 'OPTIONS'])
 @admin_required()
 def admin_stats():
     total_users = User.query.count()
@@ -265,7 +270,7 @@ def admin_stats():
     }), 200
 
 
-@app.route('/api/admin/users', methods=['GET'])
+@app.route('/api/admin/users', methods=['GET', 'OPTIONS'])
 @admin_required()
 def admin_users():
     users = User.query.all()
@@ -279,7 +284,7 @@ def admin_users():
     return jsonify(result), 200
 
 
-@app.route('/api/admin/users/<int:user_id>/role', methods=['PUT'])
+@app.route('/api/admin/users/<int:user_id>/role', methods=['PUT', 'OPTIONS'])
 @admin_required()
 def admin_update_role(user_id):
     data = request.get_json() or {}
@@ -302,7 +307,7 @@ def admin_update_role(user_id):
     return jsonify({'message': 'Role updated successfully'}), 200
 
 
-@app.route('/api/admin/datasets', methods=['GET'])
+@app.route('/api/admin/datasets', methods=['GET', 'OPTIONS'])
 @admin_required()
 def admin_datasets():
     datasets = Dataset.query.all()
@@ -316,7 +321,7 @@ def admin_datasets():
     return jsonify(result), 200
 
 
-@app.route('/api/admin/system/status', methods=['GET'])
+@app.route('/api/admin/system/status', methods=['GET', 'OPTIONS'])
 @admin_required()
 def admin_system_status():
     return jsonify({
@@ -327,7 +332,7 @@ def admin_system_status():
     }), 200
 
 
-@app.route('/api/admin/system/logs', methods=['GET'])
+@app.route('/api/admin/system/logs', methods=['GET', 'OPTIONS'])
 @admin_required()
 def admin_system_logs():
     logs = SystemLog.query.order_by(SystemLog.timestamp.desc()).limit(20).all()
